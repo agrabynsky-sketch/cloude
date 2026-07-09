@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "note": "PARTIAL / BEST-EFFORT list, NOT a full scrape of wizzair.com. Compiled from public web-search summaries (aggregator sites: FlightConnections, Airhex, Brilliant Maps, Wikipedia, etc.) on 2026-07-09, not from the live Wizz Air search form.",
+    "why_partial": "Direct network access from this environment to wizzair.com/be.wizzair.com is blocked by sandbox policy, and full-page fetching (WebFetch) was returning 403 for all external sites during this session, so only search-snippet data could be gathered. Search snippets are AI-summarized and not 100% reliable — one code from a snippet (Kutaisi) was verified wrong and corrected below.",
+    "coverage": "Only the countries/regions listed here were cross-checked with reasonable confidence. Wizz Air's full network is ~150-190+ airports across 43-50 countries (sources disagree on exact count) - most of it is NOT included below.",
+    "recommendation": "For a complete, accurate, current list, run wizzair_route_scraper.py from a machine/environment with normal internet access to wizzair.com.",
+    "generated": "2026-07-09"
+  },
+  "countries": {
+    "Hungary": ["BUD"],
+    "Germany": ["BER", "CGN", "DTM", "HHN", "FDH", "HAM", "FKB", "FMM", "NUE", "STR"],
+    "Greece": ["ATH", "CHQ", "CFU", "HER", "KLX", "EFL", "JMK", "RHO", "JTR", "SKG", "ZTH"],
+    "Italy": ["AHO", "BRI", "BLQ", "BDS", "CTA", "CIY", "GOA", "SUF", "BGY", "MXP", "NAP", "OLB", "PMO", "PSA", "RMI", "FCO", "TRN", "TSF", "VCE", "VRN"],
+    "Poland": ["GDN", "KTW", "KRK", "LUZ", "POZ", "RDO", "RZE", "SZZ", "WAW", "WMI", "WRO"],
+    "Spain": ["ALC", "BCN", "BIO", "FUE", "LPA", "MAD", "AGP", "MAH", "PMI", "SDR", "SVQ"],
+    "Armenia": ["EVN"],
+    "Georgia": ["KUT"],
+    "Jordan": ["AMM", "AQJ"],
+    "Israel": ["TLV"],
+    "Saudi Arabia": ["DMM", "MED"]
+  }
+}
