@@ -5,20 +5,29 @@
  * подготовленного маппинга между поставщиками.
  *
  * Идея алгоритма:
- *  1. Название номера нормализуется: нижний регистр, убирается пунктуация,
- *     многословные обороты склеиваются ("sea view" -> "seaview").
+ *  1. Название нормализуется: нижний регистр, вырезаются скобки, содержащие
+ *     только конфигурацию кроватей ("(2 TWIN BEDS OR 1 QUEEN BED)"),
+ *     пунктуация заменяется пробелами, многословные обороты склеиваются
+ *     ("sea view" -> seaview, "swim up"/"pool access" -> swimup).
  *  2. Каждый токен приводится к каноническому виду по словарю синонимов
- *     и аббревиатур (dbl -> double, "двухместный" -> double, std -> standard...).
- *  3. Стоп-слова ("room", "номер", "with", ...) отбрасываются.
- *  4. Оставшиеся канонические токены сортируются по смысловому весу
- *     (категория -> вместимость -> кровать -> атрибуты) и образуют ключ группы.
- *  5. Если точного ключа ещё нет, ищется существующая группа с достаточным
- *     сходством наборов токенов (коэффициент Жаккара) — так близкие названия
- *     объединяются, даже когда наборы токенов совпадают не полностью.
- *  6. Название категории собирается из ключевых слов группы.
+ *     и аббревиатур (dbl -> double, sv -> seaview, "двухместный" -> double...),
+ *     стоп-слова (room, wifi, free, sofa, "номер"...) отбрасываются.
+ *  3. Токены делятся на смысловые классы:
+ *       - критические (класс номера, вид из окна, вместимость, доступ
+ *         к бассейну) — при объединении групп должны совпадать точно;
+ *       - "кроватные" (double, twin, queen, king) — сохраняются в названии
+ *         категории, но НЕ участвуют в сравнении: "SUPERIOR SEA VIEW" и
+ *         "SUPERIOR TWIN SEA VIEW" — одна категория;
+ *       - остальные (balcony, duplex-признаки и т.п.) — участвуют
+ *         в мере сходства.
+ *  4. Токены сортируются по смысловому весу и образуют детерминированный
+ *     ключ группы. Если точного ключа нет, ищется группа с совпадающими
+ *     критическими классами и достаточным коэффициентом Жаккара по
+ *     остальным токенам.
+ *  5. Название категории собирается из ключевых слов группы.
  *
- * Код совместим с PHP 5.2+ (не используются короткий синтаксис массивов,
- * замыкания и пр.), работает и на PHP 7/8.
+ * Код совместим с PHP 5.2+ (без короткого синтаксиса массивов и замыканий),
+ * работает и на PHP 7/8.
  */
 
 /**
@@ -31,44 +40,57 @@
  *        )
  * @param float $similarityThreshold порог сходства Жаккара (0..1) для
  *        объединения неполностью совпадающих наборов токенов
+ * @param array $noiseWords дополнительные шумовые слова, специфичные для
+ *        ваших поставщиков (например, название отеля: array('jaz', 'bluemarine')) —
+ *        они будут отброшены при нормализации
  *
  * @return array массив категорий:
  *        array(
- *            'double-standard' => array(
- *                'category' => 'Standard Double',      // сгенерированное название
- *                'tokens'   => array('standard', 'double'),
+ *            'deluxe-family-poolview' => array(
+ *                'category' => 'Deluxe Family Pool View', // сгенерированное название
+ *                'tokens'   => array('deluxe', 'family', 'poolview'),
  *                'rooms'    => array(
- *                    array('supplier' => 'ИмяПоставщика1', 'name' => 'Standard DBL Room'),
- *                    array('supplier' => 'ИмяПоставщика2', 'name' => 'Двухместный стандарт'),
+ *                    array('supplier' => 'ИмяПоставщика1', 'name' => 'FAMILY DELUXE POOL VIEW'),
+ *                    array('supplier' => 'ИмяПоставщика2', 'name' => 'Deluxe Family Room (Pool View)'),
  *                ),
  *            ),
  *            ...
  *        )
  */
-function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6)
+function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6, array $noiseWords = array())
 {
     $groups = array();
+    $extraStop = array();
+    foreach ($noiseWords as $word) {
+        $extraStop[roomGrouperLower($word)] = true;
+    }
 
     foreach ($supplierRooms as $supplier => $roomNames) {
         if (!is_array($roomNames)) {
             continue;
         }
         foreach ($roomNames as $roomName) {
-            $tokens = roomGrouperNormalize($roomName);
+            $tokens = roomGrouperNormalize($roomName, $extraStop);
             if (count($tokens) === 0) {
                 // Ничего осмысленного не извлекли — отдельная категория "как есть"
                 $tokens = array(roomGrouperLower(trim($roomName)));
             }
 
             $key = implode('-', $tokens);
+            $signature = roomGrouperSignature($tokens);
+            $simTokens = roomGrouperSimilarityTokens($tokens);
 
             // 1. Точное совпадение ключа
             if (!isset($groups[$key])) {
-                // 2. Поиск похожей группы по коэффициенту Жаккара
+                // 2. Поиск похожей группы: критические классы должны совпадать
+                //    точно, остальные токены сравниваются по Жаккару
                 $bestKey = null;
                 $bestScore = 0.0;
                 foreach ($groups as $existingKey => $group) {
-                    $score = roomGrouperJaccard($tokens, $group['tokens']);
+                    if ($group['signature'] !== $signature) {
+                        continue; // конфликт по классу/виду/вместимости — не сливаем
+                    }
+                    $score = roomGrouperJaccard($simTokens, $group['sim_tokens']);
                     if ($score > $bestScore) {
                         $bestScore = $score;
                         $bestKey = $existingKey;
@@ -81,9 +103,11 @@ function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6)
 
             if (!isset($groups[$key])) {
                 $groups[$key] = array(
-                    'category' => roomGrouperBuildCategoryName($tokens),
-                    'tokens'   => $tokens,
-                    'rooms'    => array(),
+                    'category'   => roomGrouperBuildCategoryName($tokens),
+                    'tokens'     => $tokens,
+                    'signature'  => $signature,
+                    'sim_tokens' => $simTokens,
+                    'rooms'      => array(),
                 );
             }
 
@@ -101,20 +125,27 @@ function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6)
  * Нормализация названия номера в отсортированный набор канонических токенов.
  *
  * @param string $name исходное название номера
+ * @param array $extraStop дополнительные стоп-слова (слово => true)
  * @return array канонические токены, отсортированные по смысловому весу
  */
-function roomGrouperNormalize($name)
+function roomGrouperNormalize($name, array $extraStop = array())
 {
     $s = roomGrouperLower($name);
 
-    // Пунктуацию и разделители — в пробелы
-    $s = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $s);
-    if ($s === null) { // на случай отсутствия PCRE-UTF8
-        $s = preg_replace('/[^a-z0-9а-яё]+/i', ' ', roomGrouperLower($name));
-    }
-    $s = ' ' . trim($s) . ' ';
+    // Скобки, содержащие ТОЛЬКО конфигурацию кроватей, вырезаются целиком:
+    // "(1 QUEEN BED)", "(2 TWIN BEDS OR 1 QUEEN BED)".
+    // Скобки с содержательными словами ("(POOL VIEW)", "(DELUXE)") остаются.
+    $s = roomGrouperStripBedConfig($s);
 
-    // Многословные обороты -> один токен (до разбиения на слова)
+    // Пунктуацию и разделители — в пробелы
+    $clean = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $s);
+    if ($clean === null) { // на случай отсутствия PCRE-UTF8
+        $clean = preg_replace('/[^a-z0-9а-яё]+/i', ' ', $s);
+    }
+    $s = ' ' . trim($clean) . ' ';
+
+    // Многословные обороты -> один токен (до разбиения на слова).
+    // Более длинные фразы применяются первыми.
     foreach (roomGrouperPhraseMap() as $phrase => $canonical) {
         $s = str_replace(' ' . $phrase . ' ', ' ' . $canonical . ' ', $s);
     }
@@ -129,17 +160,17 @@ function roomGrouperNormalize($name)
 
     $tokens = array();
     foreach ($rawTokens as $token) {
-        if ($token === '' || isset($stopWords[$token])) {
+        if ($token === '' || isset($stopWords[$token]) || isset($extraStop[$token])) {
             continue;
         }
-        // Числа сами по себе (например "2" из "2 adults") не несут категории
+        // Числа сами по себе (например "2" из "capacity 2") не несут категории
         if (preg_match('/^\d+$/', $token)) {
             continue;
         }
         if (isset($synonyms[$token])) {
             $token = $synonyms[$token];
         }
-        if ($token === '' || isset($stopWords[$token])) {
+        if ($token === '' || isset($stopWords[$token]) || isset($extraStop[$token])) {
             continue;
         }
         $tokens[$token] = true; // уникальность
@@ -172,7 +203,81 @@ function roomGrouperNormalize($name)
 }
 
 /**
+ * Вырезает скобки, содержащие только конфигурацию кроватей.
+ */
+function roomGrouperStripBedConfig($s)
+{
+    if (!preg_match_all('/\(([^()]*)\)/u', $s, $matches, PREG_SET_ORDER)) {
+        return $s;
+    }
+    foreach ($matches as $match) {
+        $inner = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $match[1]);
+        if ($inner === null) {
+            $inner = preg_replace('/[^a-z0-9а-яё]+/i', ' ', $match[1]);
+        }
+        $words = preg_split('/\s+/u', trim($inner));
+        if ($words === false || count($words) === 0) {
+            continue;
+        }
+        $onlyBedConfig = true;
+        foreach ($words as $word) {
+            if ($word === '') {
+                continue;
+            }
+            if (!preg_match('/^(?:\d+|one|two|three|single|double|twin|queen|king|sofa|large|kids|extra|bunk|bed|beds|and|or|size|кровать|кровати|кроватей|односпальная|двуспальная)$/u', $word)) {
+                $onlyBedConfig = false;
+                break;
+            }
+        }
+        if ($onlyBedConfig) {
+            $s = str_replace($match[0], ' ', $s);
+        }
+    }
+    return $s;
+}
+
+/**
+ * Токены, важные для сходства: всё, кроме "кроватных" (double/twin/queen/king).
+ * Кроватные токены остаются в ключе и названии категории, но не влияют
+ * на сравнение групп: "Superior Sea View" == "Superior Twin Sea View".
+ */
+function roomGrouperSimilarityTokens(array $tokens)
+{
+    $bedding = roomGrouperBeddingTokens();
+    $result = array();
+    foreach ($tokens as $token) {
+        if (!isset($bedding[$token])) {
+            $result[] = $token;
+        }
+    }
+    return $result;
+}
+
+/**
+ * Сигнатура критических классов: для каждого класса (grade/view/capacity/access)
+ * — отсортированный список токенов. Две группы могут объединяться только
+ * при полном совпадении сигнатур: sea view не сольётся с pool view,
+ * deluxe — со standard, triple — с double и т.д.
+ */
+function roomGrouperSignature(array $tokens)
+{
+    $classes = roomGrouperTokenClasses();
+    $signature = array('grade' => array(), 'view' => array(), 'capacity' => array(), 'access' => array());
+    foreach ($tokens as $token) {
+        if (isset($classes[$token])) {
+            $signature[$classes[$token]][] = $token;
+        }
+    }
+    foreach ($signature as $class => $classTokens) {
+        sort($classTokens);
+        $signature[$class] = implode(',', $classTokens);
+    }
+    return $signature;
+}
+
+/**
  * Коэффициент Жаккара для двух наборов токенов: |A ∩ B| / |A ∪ B|.
+ * Два пустых набора считаются идентичными (1.0).
  */
 function roomGrouperJaccard(array $a, array $b)
 {
@@ -189,7 +294,7 @@ function roomGrouperJaccard(array $a, array $b)
 
 /**
  * Человекочитаемое название категории из ключевых токенов.
- * Порядок: класс номера, вместимость, тип кровати, атрибуты.
+ * Порядок: класс номера, вместимость, кровати, вид, атрибуты.
  */
 function roomGrouperBuildCategoryName(array $tokens)
 {
@@ -234,38 +339,48 @@ function roomGrouperLower($s)
  *  сам алгоритм при этом не меняется.
  * ------------------------------------------------------------------ */
 
-/** Многословные обороты -> канонический токен (применяются до разбиения). */
+/**
+ * Многословные обороты -> канонический токен (применяются до разбиения).
+ * ВАЖНО: более длинные фразы должны идти раньше коротких с тем же началом.
+ */
 function roomGrouperPhraseMap()
 {
     return array(
-        'sea view'        => 'seaview',
-        'ocean view'      => 'seaview',
-        'вид на море'     => 'seaview',
-        'с видом на море' => 'seaview',
-        'garden view'     => 'gardenview',
-        'вид на сад'      => 'gardenview',
-        'city view'       => 'cityview',
-        'вид на город'    => 'cityview',
-        'pool view'       => 'poolview',
+        'access to outdoor pool' => 'swimup',
+        'access to pool'  => 'swimup',
+        'side sea view'   => 'seaview',
         'вид на бассейн'  => 'poolview',
+        'с видом на море' => 'seaview',
+        'bed and breakfast' => '',
+        'all inclusive'   => '',
+        'вид на город'    => 'cityview',
         'mountain view'   => 'mountainview',
+        'вид на море'     => 'seaview',
         'вид на горы'     => 'mountainview',
-        'de luxe'         => 'deluxe',
-        'king size'       => 'king',
+        'вид на сад'      => 'gardenview',
         'junior suite'    => 'juniorsuite',
         'джуниор сюит'    => 'juniorsuite',
-        'полулюкс'        => 'juniorsuite',
-        'non smoking'     => 'nonsmoking',
         'для некурящих'   => 'nonsmoking',
+        'полулюкс'        => 'juniorsuite',
+        'garden view'     => 'gardenview',
+        'ocean view'      => 'seaview',
         'run of house'    => 'roh',
         'one bedroom'     => '1bedroom',
         'two bedroom'     => '2bedroom',
         '1 bedroom'       => '1bedroom',
         '2 bedroom'       => '2bedroom',
+        'non smoking'     => 'nonsmoking',
+        'pool access'     => 'swimup',
+        'pool view'       => 'poolview',
+        'city view'       => 'cityview',
+        'sea view'        => 'seaview',
+        'de luxe'         => 'deluxe',
+        'king size'       => 'king',
+        'queen size'      => 'queen',
         'half board'      => '', // питание не влияет на категорию номера
         'full board'      => '',
-        'all inclusive'   => '',
-        'bed and breakfast' => '',
+        'free wifi'       => '',
+        'swim up'         => 'swimup',
     );
 }
 
@@ -288,6 +403,7 @@ function roomGrouperSynonymMap()
         'sgl' => 'single', 'sngl' => 'single', 'одноместный' => 'single',
         'dbl' => 'double', 'dble' => 'double', 'двухместный' => 'double',
         'двухместная' => 'double',
+        'casal' => 'double', // португальское "двуспальная кровать"
         'twn' => 'twin', 'твин' => 'twin',
         'trpl' => 'triple', 'tpl' => 'triple', 'трехместный' => 'triple',
         'трёхместный' => 'triple',
@@ -303,30 +419,36 @@ function roomGrouperSynonymMap()
         'люкс' => 'suite', 'сюит' => 'suite', 'suit' => 'suite',
         'improved' => 'superior', 'улучшенный' => 'superior',
         'улучшенная' => 'superior',
+        'exec' => 'executive',
         'econom' => 'economy', 'эконом' => 'economy',
         'премиум' => 'premium',
         'президентский' => 'presidential',
         'apt' => 'apartment', 'apts' => 'apartment',
         'апартамент' => 'apartment', 'апартаменты' => 'apartment',
-        'studio' => 'studio', 'студия' => 'studio', 'студио' => 'studio',
-        'bungalow' => 'bungalow', 'бунгало' => 'bungalow',
-        'villa' => 'villa', 'вилла' => 'villa',
-        'cottage' => 'cottage', 'коттедж' => 'cottage',
+        'студия' => 'studio', 'студио' => 'studio',
+        'бунгало' => 'bungalow',
+        'вилла' => 'villa',
+        'коттедж' => 'cottage',
 
         // Кровати
         'кинг' => 'king',
-        'queen' => 'queen',
+        'квин' => 'queen',
+
+        // Виды (аббревиатуры)
+        'sv' => 'seaview',
+        'gv' => 'gardenview',
+        'pool' => 'poolview', // одиночный "pool" вне фраз означает вид/зону бассейна
 
         // Атрибуты
         'balc' => 'balcony', 'балкон' => 'balcony', 'балконом' => 'balcony',
-        'terrace' => 'terrace', 'терраса' => 'terrace', 'террасой' => 'terrace',
-        'nonsmoking' => 'nonsmoking',
+        'терраса' => 'terrace', 'террасой' => 'terrace',
 
         // Единственное/множественное число
         'suites' => 'suite',
         'apartments' => 'apartment',
         'villas' => 'villa',
         'studios' => 'studio',
+        'duplexes' => 'duplex',
     );
 }
 
@@ -335,12 +457,49 @@ function roomGrouperStopWords()
 {
     return array_flip(array(
         'room', 'rooms', 'номер', 'номера', 'комната',
-        'with', 'and', 'or', 'the', 'a', 'an', 'in', 'of', 'for',
+        'with', 'and', 'or', 'the', 'a', 'an', 'in', 'of', 'for', 'to',
         'с', 'и', 'или', 'на', 'в', 'для', 'без',
         'bed', 'beds', 'кровать', 'кроватью', 'кровати',
         'adults', 'adult', 'взрослых', 'взрослый',
+        'kids', 'kid', 'child', 'children', 'детская',
+        'sofa', 'large', 'extra', 'bunk', 'size',
+        'free', 'wifi', 'internet',
+        'capacity', 'view', 'side', 'outdoor',
         'only', 'new', 'main', 'building',
     ));
+}
+
+/**
+ * Критические классы токенов. Внутри одного класса значения должны
+ * совпадать точно, чтобы группы можно было объединить.
+ */
+function roomGrouperTokenClasses()
+{
+    return array(
+        // Класс/уровень номера
+        'economy' => 'grade', 'standard' => 'grade', 'superior' => 'grade',
+        'deluxe' => 'grade', 'premium' => 'grade', 'suite' => 'grade',
+        'juniorsuite' => 'grade', 'presidential' => 'grade',
+        'executive' => 'grade', 'apartment' => 'grade', 'studio' => 'grade',
+        'bungalow' => 'grade', 'villa' => 'grade', 'cottage' => 'grade',
+        'family' => 'grade', 'duplex' => 'grade', 'roh' => 'grade',
+        // Вид из окна
+        'seaview' => 'view', 'gardenview' => 'view', 'cityview' => 'view',
+        'poolview' => 'view', 'mountainview' => 'view',
+        // Вместимость (double/twin/queen/king — "кроватные", не здесь)
+        'single' => 'capacity', 'triple' => 'capacity', 'quad' => 'capacity',
+        // Прямой доступ к бассейну
+        'swimup' => 'access',
+    );
+}
+
+/**
+ * "Кроватные" токены: сохраняются в ключе и названии категории,
+ * но не участвуют в сравнении групп.
+ */
+function roomGrouperBeddingTokens()
+{
+    return array('double' => true, 'twin' => true, 'queen' => true, 'king' => true);
 }
 
 /**
@@ -353,17 +512,18 @@ function roomGrouperTokenWeights()
         // Класс номера
         'economy' => 10, 'standard' => 10, 'superior' => 10, 'deluxe' => 10,
         'premium' => 10, 'suite' => 10, 'juniorsuite' => 10,
-        'presidential' => 10, 'apartment' => 10, 'studio' => 10,
-        'bungalow' => 10, 'villa' => 10, 'cottage' => 10, 'family' => 10,
-        'roh' => 10,
+        'presidential' => 10, 'executive' => 11, 'apartment' => 10,
+        'studio' => 10, 'bungalow' => 10, 'villa' => 10, 'cottage' => 10,
+        'family' => 12, 'duplex' => 12, 'roh' => 10,
         // Вместимость
         'single' => 20, 'double' => 20, 'twin' => 20, 'triple' => 20,
         'quad' => 20,
         // Кровати / спальни
         'king' => 30, 'queen' => 30, '1bedroom' => 30, '2bedroom' => 30,
-        // Виды и атрибуты
+        // Виды и доступ к бассейну
         'seaview' => 40, 'gardenview' => 40, 'cityview' => 40,
-        'poolview' => 40, 'mountainview' => 40,
+        'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
+        // Атрибуты
         'balcony' => 50, 'terrace' => 50, 'nonsmoking' => 60,
     );
 }
@@ -379,6 +539,7 @@ function roomGrouperDisplayLabels()
         'mountainview' => 'Mountain View',
         'juniorsuite'  => 'Junior Suite',
         'nonsmoking'   => 'Non-Smoking',
+        'swimup'       => 'Swim-Up',
         '1bedroom'     => 'One Bedroom',
         '2bedroom'     => 'Two Bedroom',
         'roh'          => 'Run of House',
