@@ -128,3 +128,31 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Семантика бассейнов — три разные категории:
+ *   - pool view    — вид на бассейн;
+ *   - swim up / pool access — выход в общий бассейн, проходящий вдоль номеров;
+ *   - with pool / pool villa / private pool — индивидуальный бассейн
+ *     в номере или на вилле.
+ */
+$poolNames = array(
+    'VILLA WITH PRIVATE POOL',
+    'POOL VILLA',
+    'VILLA WITH POOL',
+    'ВИЛЛА С БАССЕЙНОМ',
+    'VILLA WITH PLUNGE POOL',
+    'DELUXE SWIM UP ROOM',
+    'DELUXE ROOM POOL ACCESS',
+    'DELUXE ROOM POOL VIEW',
+    'DELUXE ROOM WITH POOL',
+);
+
+echo "\n--- Разделение pool view / swim-up / private pool ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $poolNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

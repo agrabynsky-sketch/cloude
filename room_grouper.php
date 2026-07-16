@@ -8,7 +8,8 @@
  *  1. Название нормализуется: нижний регистр, вырезаются скобки, содержащие
  *     только конфигурацию кроватей ("(2 TWIN BEDS OR 1 QUEEN BED)"),
  *     пунктуация заменяется пробелами, многословные обороты склеиваются
- *     ("sea view" -> seaview, "swim up"/"pool access" -> swimup).
+ *     ("sea view" -> seaview, "swim up"/"pool access" -> swimup; при этом
+ *     "with pool"/"pool villa" — индивидуальный бассейн -> privatepool).
  *  2. Каждый токен приводится к каноническому виду по словарю синонимов
  *     и аббревиатур (dbl -> double, sv -> seaview, "двухместный" -> double...),
  *     стоп-слова (room, wifi, free, sofa, "номер"...) отбрасываются.
@@ -145,8 +146,11 @@ function roomGrouperNormalize($name, array $extraStop = array())
     $s = ' ' . trim($clean) . ' ';
 
     // Многословные обороты -> один токен (до разбиения на слова).
-    // Более длинные фразы применяются первыми.
-    foreach (roomGrouperPhraseMap() as $phrase => $canonical) {
+    // Более длинные фразы применяются первыми, чтобы "pool or sea view"
+    // сработала раньше, чем "sea view" или "pool view".
+    $phrases = roomGrouperPhraseMap();
+    uksort($phrases, 'roomGrouperComparePhraseKeys');
+    foreach ($phrases as $phrase => $canonical) {
         $s = str_replace(' ' . $phrase . ' ', ' ' . $canonical . ' ', $s);
     }
 
@@ -325,6 +329,12 @@ function roomGrouperCompareTokens($a, $b)
     return ($wa < $wb) ? -1 : 1;
 }
 
+/** Сортировка фраз: более длинные применяются первыми. */
+function roomGrouperComparePhraseKeys($a, $b)
+{
+    return strlen($b) - strlen($a);
+}
+
 /** Регистронезависимое приведение с поддержкой UTF-8. */
 function roomGrouperLower($s)
 {
@@ -346,8 +356,21 @@ function roomGrouperLower($s)
 function roomGrouperPhraseMap()
 {
     return array(
+        // Общий бассейн, проходящий вдоль номеров (выход прямо в бассейн)
         'access to outdoor pool' => 'swimup',
         'access to pool'  => 'swimup',
+        'pool access'     => 'swimup',
+        'swim up'         => 'swimup',
+        // Индивидуальный бассейн в номере/на вилле
+        'private pool'    => 'privatepool',
+        'plunge pool'     => 'privatepool',
+        'own pool'        => 'privatepool',
+        'с бассейном'     => 'privatepool',
+        'частным бассейном' => 'privatepool',
+        'собственным бассейном' => 'privatepool',
+        // "pool or sea view" должна сработать раньше "sea view"/"pool view"
+        'pool or sea view' => 'poolview seaview',
+        'sea or pool view' => 'seaview poolview',
         'side sea view'   => 'seaview',
         'вид на бассейн'  => 'poolview',
         'с видом на море' => 'seaview',
@@ -370,7 +393,6 @@ function roomGrouperPhraseMap()
         '1 bedroom'       => '1bedroom',
         '2 bedroom'       => '2bedroom',
         'non smoking'     => 'nonsmoking',
-        'pool access'     => 'swimup',
         'pool view'       => 'poolview',
         'city view'       => 'cityview',
         'sea view'        => 'seaview',
@@ -380,7 +402,6 @@ function roomGrouperPhraseMap()
         'half board'      => '', // питание не влияет на категорию номера
         'full board'      => '',
         'free wifi'       => '',
-        'swim up'         => 'swimup',
     );
 }
 
@@ -437,7 +458,10 @@ function roomGrouperSynonymMap()
         // Виды (аббревиатуры)
         'sv' => 'seaview',
         'gv' => 'gardenview',
-        'pool' => 'poolview', // одиночный "pool" вне фраз означает вид/зону бассейна
+        // Одиночный "pool" вне фраз ("Pool Villa", "Villa with Pool") означает
+        // индивидуальный бассейн; вид на бассейн всегда пишется как "pool view"
+        'pool' => 'privatepool',
+        'бассейн' => 'privatepool', 'бассейном' => 'privatepool',
 
         // Атрибуты
         'balc' => 'balcony', 'балкон' => 'balcony', 'балконом' => 'balcony',
@@ -488,8 +512,9 @@ function roomGrouperTokenClasses()
         'poolview' => 'view', 'mountainview' => 'view',
         // Вместимость (double/twin/queen/king — "кроватные", не здесь)
         'single' => 'capacity', 'triple' => 'capacity', 'quad' => 'capacity',
-        // Прямой доступ к бассейну
-        'swimup' => 'access',
+        // Бассейн: swim-up (выход в общий бассейн) и индивидуальный бассейн —
+        // разные категории, точное сравнение класса не даст им слиться
+        'swimup' => 'access', 'privatepool' => 'access',
     );
 }
 
@@ -523,6 +548,7 @@ function roomGrouperTokenWeights()
         // Виды и доступ к бассейну
         'seaview' => 40, 'gardenview' => 40, 'cityview' => 40,
         'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
+        'privatepool' => 45,
         // Атрибуты
         'balcony' => 50, 'terrace' => 50, 'nonsmoking' => 60,
     );
@@ -540,6 +566,7 @@ function roomGrouperDisplayLabels()
         'juniorsuite'  => 'Junior Suite',
         'nonsmoking'   => 'Non-Smoking',
         'swimup'       => 'Swim-Up',
+        'privatepool'  => 'Private Pool',
         '1bedroom'     => 'One Bedroom',
         '2bedroom'     => 'Two Bedroom',
         'roh'          => 'Run of House',
