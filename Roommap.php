@@ -28,42 +28,7 @@
  * Код совместим с PHP 5.2+ (без короткого синтаксиса массивов и замыканий),
  * работает и на PHP 7/8.
  */
-class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
-{
-    /** @var float порог сходства Жаккара (0..1) для объединения групп */
-    protected $_similarityThreshold = 0.6;
-
-    /** @var array дополнительные шумовые слова (слово => true) */
-    protected $_noiseWords = array();
-
-    /**
-     * Порог сходства для объединения неполностью совпадающих наборов токенов.
-     *
-     * @param float $threshold значение 0..1
-     * @return Hub_Hotel_Action_Content_Roommap
-     */
-    public function setSimilarityThreshold($threshold)
-    {
-        $this->_similarityThreshold = (float) $threshold;
-        return $this;
-    }
-
-    /**
-     * Дополнительные шумовые слова, специфичные для поставщиков
-     * (например, название отеля: array('jaz', 'bluemarine')) —
-     * они будут отброшены при нормализации.
-     *
-     * @param array $words
-     * @return Hub_Hotel_Action_Content_Roommap
-     */
-    public function setNoiseWords(array $words)
-    {
-        $this->_noiseWords = array();
-        foreach ($words as $word) {
-            $this->_noiseWords[$this->_lower($word)] = true;
-        }
-        return $this;
-    }
+class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
 
     /**
      * Главный метод: группирует названия номеров в семантические категории.
@@ -73,11 +38,16 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      *            'ИмяПоставщика1' => array('Standard DBL Room', 'Suite Sea View', ...),
      *            'ИмяПоставщика2' => array('Двухместный стандарт', ...),
      *        )
+     * @param float $similarityThreshold порог сходства Жаккара (0..1) для
+     *        объединения неполностью совпадающих наборов токенов
+     * @param array $noiseWords дополнительные шумовые слова, специфичные для
+     *        ваших поставщиков (например, название отеля:
+     *        array('jaz', 'bluemarine')) — они будут отброшены при нормализации
      *
      * @return array массив категорий:
      *        array(
      *            'deluxe-family-poolview' => array(
-     *                'category' => 'Deluxe Family Pool View', // сгенерированное название
+     *                'category' => 'Deluxe Family Pool View',
      *                'tokens'   => array('deluxe', 'family', 'poolview'),
      *                'rooms'    => array(
      *                    array('supplier' => 'ИмяПоставщика1', 'name' => 'FAMILY DELUXE POOL VIEW'),
@@ -87,24 +57,29 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      *            ...
      *        )
      */
-    public function group(array $supplierRooms)
+    public function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6, array $noiseWords = array())
     {
         $groups = array();
+
+        $extraStop = array();
+        foreach ($noiseWords as $word) {
+            $extraStop[$this->roomGrouperLower($word)] = true;
+        }
 
         foreach ($supplierRooms as $supplier => $roomNames) {
             if (!is_array($roomNames)) {
                 continue;
             }
             foreach ($roomNames as $roomName) {
-                $tokens = $this->_normalize($roomName);
+                $tokens = $this->roomGrouperNormalize($roomName, $extraStop);
                 if (count($tokens) === 0) {
                     // Ничего осмысленного не извлекли — отдельная категория "как есть"
-                    $tokens = array($this->_lower(trim($roomName)));
+                    $tokens = array($this->roomGrouperLower(trim($roomName)));
                 }
 
                 $key = implode('-', $tokens);
-                $signature = $this->_signature($tokens);
-                $simTokens = $this->_similarityTokens($tokens);
+                $signature = $this->roomGrouperSignature($tokens);
+                $simTokens = $this->roomGrouperSimilarityTokens($tokens);
 
                 // 1. Точное совпадение ключа
                 if (!isset($groups[$key])) {
@@ -116,20 +91,20 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
                         if ($group['signature'] !== $signature) {
                             continue; // конфликт по классу/виду/вместимости — не сливаем
                         }
-                        $score = $this->_jaccard($simTokens, $group['sim_tokens']);
+                        $score = $this->roomGrouperJaccard($simTokens, $group['sim_tokens']);
                         if ($score > $bestScore) {
                             $bestScore = $score;
                             $bestKey = $existingKey;
                         }
                     }
-                    if ($bestKey !== null && $bestScore >= $this->_similarityThreshold) {
+                    if ($bestKey !== null && $bestScore >= $similarityThreshold) {
                         $key = $bestKey;
                     }
                 }
 
                 if (!isset($groups[$key])) {
                     $groups[$key] = array(
-                        'category'   => $this->_buildCategoryName($tokens),
+                        'category'   => $this->roomGrouperBuildCategoryName($tokens),
                         'tokens'     => $tokens,
                         'signature'  => $signature,
                         'sim_tokens' => $simTokens,
@@ -151,16 +126,17 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * Нормализация названия номера в отсортированный набор канонических токенов.
      *
      * @param string $name исходное название номера
+     * @param array $extraStop дополнительные стоп-слова (слово => true)
      * @return array канонические токены, отсортированные по смысловому весу
      */
-    protected function _normalize($name)
+    public function roomGrouperNormalize($name, array $extraStop = array())
     {
-        $s = $this->_lower($name);
+        $s = $this->roomGrouperLower($name);
 
         // Скобки, содержащие ТОЛЬКО конфигурацию кроватей, вырезаются целиком:
         // "(1 QUEEN BED)", "(2 TWIN BEDS OR 1 QUEEN BED)".
         // Скобки с содержательными словами ("(POOL VIEW)", "(DELUXE)") остаются.
-        $s = $this->_stripBedConfig($s);
+        $s = $this->roomGrouperStripBedConfig($s);
 
         // Пунктуацию и разделители — в пробелы
         $clean = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $s);
@@ -172,8 +148,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
         // Многословные обороты -> один токен (до разбиения на слова).
         // Более длинные фразы применяются первыми, чтобы "pool or sea view"
         // сработала раньше, чем "sea view" или "pool view".
-        $phrases = $this->_phraseMap();
-        uksort($phrases, array($this, '_comparePhraseKeys'));
+        $phrases = $this->roomGrouperPhraseMap();
+        uksort($phrases, array($this, 'roomGrouperComparePhraseKeys'));
         foreach ($phrases as $phrase => $canonical) {
             $s = str_replace(' ' . $phrase . ' ', ' ' . $canonical . ' ', $s);
         }
@@ -183,12 +159,12 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
             $rawTokens = explode(' ', trim($s));
         }
 
-        $synonyms  = $this->_synonymMap();
-        $stopWords = $this->_stopWords();
+        $synonyms  = $this->roomGrouperSynonymMap();
+        $stopWords = $this->roomGrouperStopWords();
 
         $tokens = array();
         foreach ($rawTokens as $token) {
-            if ($token === '' || isset($stopWords[$token]) || isset($this->_noiseWords[$token])) {
+            if ($token === '' || isset($stopWords[$token]) || isset($extraStop[$token])) {
                 continue;
             }
             // Числа сами по себе (например "2" из "capacity 2") не несут категории
@@ -198,7 +174,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
             if (isset($synonyms[$token])) {
                 $token = $synonyms[$token];
             }
-            if ($token === '' || isset($stopWords[$token]) || isset($this->_noiseWords[$token])) {
+            if ($token === '' || isset($stopWords[$token]) || isset($extraStop[$token])) {
                 continue;
             }
             $tokens[$token] = true; // уникальность
@@ -206,7 +182,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
 
         // Комбинации токенов, образующие одно понятие независимо от порядка слов
         // ("Junior Suite" и "Suite Junior" -> juniorsuite)
-        foreach ($this->_tokenCombos() as $combo) {
+        foreach ($this->roomGrouperTokenCombos() as $combo) {
             $parts = $combo[0];
             $canonical = $combo[1];
             $allPresent = true;
@@ -225,7 +201,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
         }
 
         $tokens = array_keys($tokens);
-        usort($tokens, array($this, '_compareTokens'));
+        usort($tokens, array($this, 'roomGrouperCompareTokens'));
 
         return $tokens;
     }
@@ -236,7 +212,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param string $s
      * @return string
      */
-    protected function _stripBedConfig($s)
+    public function roomGrouperStripBedConfig($s)
     {
         if (!preg_match_all('/\(([^()]*)\)/u', $s, $matches, PREG_SET_ORDER)) {
             return $s;
@@ -275,9 +251,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param array $tokens
      * @return array
      */
-    protected function _similarityTokens(array $tokens)
+    public function roomGrouperSimilarityTokens(array $tokens)
     {
-        $bedding = $this->_beddingTokens();
+        $bedding = $this->roomGrouperBeddingTokens();
         $result = array();
         foreach ($tokens as $token) {
             if (!isset($bedding[$token])) {
@@ -296,9 +272,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param array $tokens
      * @return array
      */
-    protected function _signature(array $tokens)
+    public function roomGrouperSignature(array $tokens)
     {
-        $classes = $this->_tokenClasses();
+        $classes = $this->roomGrouperTokenClasses();
         $signature = array('grade' => array(), 'view' => array(), 'capacity' => array(), 'access' => array());
         foreach ($tokens as $token) {
             if (isset($classes[$token])) {
@@ -320,7 +296,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param array $b
      * @return float
      */
-    protected function _jaccard(array $a, array $b)
+    public function roomGrouperJaccard(array $a, array $b)
     {
         if (count($a) === 0 && count($b) === 0) {
             return 1.0;
@@ -340,9 +316,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param array $tokens
      * @return string
      */
-    protected function _buildCategoryName(array $tokens)
+    public function roomGrouperBuildCategoryName(array $tokens)
     {
-        $labels = $this->_displayLabels();
+        $labels = $this->roomGrouperDisplayLabels();
         $parts = array();
         foreach ($tokens as $token) {
             if (isset($labels[$token])) {
@@ -362,9 +338,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param string $b
      * @return int
      */
-    public function _compareTokens($a, $b)
+    public function roomGrouperCompareTokens($a, $b)
     {
-        $weights = $this->_tokenWeights();
+        $weights = $this->roomGrouperTokenWeights();
         $wa = isset($weights[$a]) ? $weights[$a] : 100;
         $wb = isset($weights[$b]) ? $weights[$b] : 100;
         if ($wa === $wb) {
@@ -380,18 +356,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
      * @param string $b
      * @return int
      */
-    public function _comparePhraseKeys($a, $b)
+    public function roomGrouperComparePhraseKeys($a, $b)
     {
         return strlen($b) - strlen($a);
     }
 
-    /**
-     * Регистронезависимое приведение с поддержкой UTF-8.
-     *
-     * @param string $s
-     * @return string
-     */
-    protected function _lower($s)
+    /** Регистронезависимое приведение с поддержкой UTF-8. */
+    public function roomGrouperLower($s)
     {
         if (function_exists('mb_strtolower')) {
             return mb_strtolower($s, 'UTF-8');
@@ -406,10 +377,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
 
     /**
      * Многословные обороты -> канонический токен (применяются до разбиения).
-     *
-     * @return array
      */
-    protected function _phraseMap()
+    public function roomGrouperPhraseMap()
     {
         return array(
             // Общий бассейн, проходящий вдоль номеров (выход прямо в бассейн)
@@ -464,22 +433,16 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
     /**
      * Наборы токенов, которые вместе образуют одно понятие (порядок слов не важен).
      * Формат: array(array(составные_токены), 'канонический_токен').
-     *
-     * @return array
      */
-    protected function _tokenCombos()
+    public function roomGrouperTokenCombos()
     {
         return array(
             array(array('junior', 'suite'), 'juniorsuite'),
         );
     }
 
-    /**
-     * Одиночные токены: синонимы и аббревиатуры -> канонический токен.
-     *
-     * @return array
-     */
-    protected function _synonymMap()
+    /** Одиночные токены: синонимы и аббревиатуры -> канонический токен. */
+    public function roomGrouperSynonymMap()
     {
         return array(
             // Вместимость / тип размещения
@@ -508,14 +471,14 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
             'президентский' => 'presidential',
             'apt' => 'apartment', 'apts' => 'apartment',
             'апартамент' => 'apartment', 'апартаменты' => 'apartment',
-            'студия' => 'studio', 'студио' => 'studio',
-            'бунгало' => 'bungalow',
-            'вилла' => 'villa',
-            'коттедж' => 'cottage',
+            'studio' => 'studio', 'студия' => 'studio', 'студио' => 'studio',
+            'bungalow' => 'bungalow', 'бунгало' => 'bungalow',
+            'villa' => 'villa', 'вилла' => 'villa',
+            'cottage' => 'cottage', 'коттедж' => 'cottage',
 
             // Кровати
             'кинг' => 'king',
-            'квин' => 'queen',
+            'queen' => 'queen', 'квин' => 'queen',
 
             // Виды (аббревиатуры)
             'sv' => 'seaview',
@@ -527,7 +490,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
 
             // Атрибуты
             'balc' => 'balcony', 'балкон' => 'balcony', 'балконом' => 'balcony',
-            'терраса' => 'terrace', 'террасой' => 'terrace',
+            'terrace' => 'terrace', 'терраса' => 'terrace', 'террасой' => 'terrace',
+            'nonsmoking' => 'nonsmoking',
 
             // Единственное/множественное число
             'suites' => 'suite',
@@ -538,12 +502,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
         );
     }
 
-    /**
-     * Слова, не несущие категорийного смысла, — отбрасываются.
-     *
-     * @return array
-     */
-    protected function _stopWords()
+    /** Слова, не несущие категорийного смысла, — отбрасываются. */
+    public function roomGrouperStopWords()
     {
         return array_flip(array(
             'room', 'rooms', 'номер', 'номера', 'комната',
@@ -562,10 +522,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
     /**
      * Критические классы токенов. Внутри одного класса значения должны
      * совпадать точно, чтобы группы можно было объединить.
-     *
-     * @return array
      */
-    protected function _tokenClasses()
+    public function roomGrouperTokenClasses()
     {
         return array(
             // Класс/уровень номера
@@ -589,10 +547,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
     /**
      * "Кроватные" токены: сохраняются в ключе и названии категории,
      * но не участвуют в сравнении групп.
-     *
-     * @return array
      */
-    protected function _beddingTokens()
+    public function roomGrouperBeddingTokens()
     {
         return array('double' => true, 'twin' => true, 'queen' => true, 'king' => true);
     }
@@ -600,10 +556,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
     /**
      * Смысловой вес токена для порядка в ключе и названии категории.
      * Меньше — важнее (идёт первым).
-     *
-     * @return array
      */
-    protected function _tokenWeights()
+    public function roomGrouperTokenWeights()
     {
         return array(
             // Класс номера
@@ -626,12 +580,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
         );
     }
 
-    /**
-     * Красивые подписи для канонических токенов в названии категории.
-     *
-     * @return array
-     */
-    protected function _displayLabels()
+    /** Красивые подписи для канонических токенов в названии категории. */
+    public function roomGrouperDisplayLabels()
     {
         return array(
             'seaview'      => 'Sea View',
@@ -648,4 +598,5 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract
             'roh'          => 'Run of House',
         );
     }
+
 }
