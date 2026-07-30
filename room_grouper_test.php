@@ -156,3 +156,32 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Опции кроватей не участвуют в группировке. Номера с "King or Twin",
+ * "Double/Twin" и т.п. не дробятся; номер, названный только по кровати,
+ * попадает в самую низшую категорию (Standard).
+ */
+$bedNames = array(
+    'DOUBLE ROOM',
+    'TWIN ROOM',
+    'DOUBLE/TWIN ROOM',
+    'DOUBLE OR TWIN BED',
+    'KING OR TWIN',
+    '1 KING OR 2 TWIN',
+    'KING BED OR TWO SINGLE BEDS',
+    'SUPERIOR ROOM KING OR TWIN',
+    'SUPERIOR TWIN ROOM SEA VIEW',
+    'SUPERIOR ROOM SEA VIEW',
+    'DELUXE ROOM KING BED',
+    'DELUXE ROOM TWIN BEDS',
+);
+
+echo "\n--- Опции кроватей исключены из группировки ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $bedNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

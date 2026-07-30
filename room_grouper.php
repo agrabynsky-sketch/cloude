@@ -13,14 +13,14 @@
  *  2. Каждый токен приводится к каноническому виду по словарю синонимов
  *     и аббревиатур (dbl -> double, sv -> seaview, "двухместный" -> double...),
  *     стоп-слова (room, wifi, free, sofa, "номер"...) отбрасываются.
- *  3. Токены делятся на смысловые классы:
+ *  3. Тип кровати (single/double/twin/queen/king) полностью исключается из
+ *     группировки: номера с опциями "King or Twin", "Double/Twin Room" не
+ *     дробятся и не подписываются одним типом кровати. Номер, названный
+ *     ТОЛЬКО по кровати ("Double", "Twin"), относится к низшей категории
+ *     (Standard). Остальные токены делятся на смысловые классы:
  *       - критические (класс номера, вид из окна, вместимость, доступ
  *         к бассейну) — при объединении групп должны совпадать точно;
- *       - "кроватные" (double, twin, queen, king) — сохраняются в названии
- *         категории, но НЕ участвуют в сравнении: "SUPERIOR SEA VIEW" и
- *         "SUPERIOR TWIN SEA VIEW" — одна категория;
- *       - остальные (balcony, duplex-признаки и т.п.) — участвуют
- *         в мере сходства.
+ *       - остальные — участвуют в мере сходства.
  *  4. Токены сортируются по смысловому весу и образуют детерминированный
  *     ключ группы. Если точного ключа нет, ищется группа с совпадающими
  *     критическими классами и достаточным коэффициентом Жаккара по
@@ -198,6 +198,23 @@ function roomGrouperNormalize($name, array $extraStop = array())
             }
             $tokens[$canonical] = true;
         }
+    }
+
+    // Тип кровати не участвует в группировке: номера с опциями
+    // "King or Twin", "Double/Twin", "1 King Or 2 Twin" не должны
+    // дробиться по кроватям и подписываться одним типом.
+    $hadBedType = false;
+    foreach (roomGrouperBeddingTokens() as $bedToken => $ignored) {
+        if (isset($tokens[$bedToken])) {
+            unset($tokens[$bedToken]);
+            $hadBedType = true;
+        }
+    }
+
+    // Номер, названный ТОЛЬКО по кровати ("Double", "Twin",
+    // "Double/Twin Room"), относим к самой низшей категории (Standard).
+    if ($hadBedType && count($tokens) === 0) {
+        $tokens[roomGrouperDefaultGrade()] = true;
     }
 
     $tokens = array_keys($tokens);
@@ -483,6 +500,8 @@ function roomGrouperStopWords()
         'room', 'rooms', 'номер', 'номера', 'комната',
         'with', 'and', 'or', 'the', 'a', 'an', 'in', 'of', 'for', 'to',
         'с', 'и', 'или', 'на', 'в', 'для', 'без',
+        'one', 'two', 'three', 'four', 'five', 'six',
+        'один', 'два', 'две', 'три', 'четыре',
         'bed', 'beds', 'кровать', 'кроватью', 'кровати',
         'adults', 'adult', 'взрослых', 'взрослый',
         'kids', 'kid', 'child', 'children', 'детская',
@@ -510,8 +529,9 @@ function roomGrouperTokenClasses()
         // Вид из окна
         'seaview' => 'view', 'gardenview' => 'view', 'cityview' => 'view',
         'poolview' => 'view', 'mountainview' => 'view',
-        // Вместимость (double/twin/queen/king — "кроватные", не здесь)
-        'single' => 'capacity', 'triple' => 'capacity', 'quad' => 'capacity',
+        // Вместимость (single/double/twin/queen/king — типы кроватей,
+        // исключаются из группировки; triple/quad — реальная вместимость)
+        'triple' => 'capacity', 'quad' => 'capacity',
         // Бассейн: swim-up (выход в общий бассейн) и индивидуальный бассейн —
         // разные категории, точное сравнение класса не даст им слиться
         'swimup' => 'access', 'privatepool' => 'access',
@@ -519,12 +539,24 @@ function roomGrouperTokenClasses()
 }
 
 /**
- * "Кроватные" токены: сохраняются в ключе и названии категории,
- * но не участвуют в сравнении групп.
+ * Типы кроватей: полностью удаляются из набора токенов при нормализации,
+ * поэтому не влияют ни на ключ группы, ни на её название, ни на сравнение.
  */
 function roomGrouperBeddingTokens()
 {
-    return array('double' => true, 'twin' => true, 'queen' => true, 'king' => true);
+    return array(
+        'single' => true, 'double' => true, 'twin' => true,
+        'queen' => true, 'king' => true,
+    );
+}
+
+/**
+ * Самая низшая категория номера. Присваивается номерам, названным
+ * только по типу кровати ("Double", "Twin", "Double/Twin Room").
+ */
+function roomGrouperDefaultGrade()
+{
+    return 'standard';
 }
 
 /**
