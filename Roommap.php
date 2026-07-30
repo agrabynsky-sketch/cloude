@@ -166,6 +166,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         // "landview". Так значимые/лендмарк-виды сохраняются и не дробятся.
         $s = $this->roomGrouperCollapseViews($s);
 
+        // "N bedroom(s)" / "one/two... bedroom(s)" -> токен Nbedroom, чтобы
+        // количество спален не терялось ("2 Bedrooms") и не дописывалось.
+        $s = $this->roomGrouperCollapseBedrooms($s);
+
         $rawTokens = preg_split('/\s+/u', trim($s));
         if ($rawTokens === false) {
             $rawTokens = explode(' ', trim($s));
@@ -332,6 +336,30 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         return false;
     }
 
+    /**
+     * "N bedroom(s)" и словесные формы ("one/two/three bedroom(s)")
+     * приводит к единому токену "Nbedroom" (2bedroom, 3bedroom...).
+     *
+     * @param string $s строка в нижнем регистре, окружённая пробелами
+     * @return string
+     */
+    public function roomGrouperCollapseBedrooms($s)
+    {
+        $result = preg_replace('/(?<= )(\d+) ?bedrooms?(?= )/', '$1bedroom', $s);
+        if ($result !== null) {
+            $s = $result;
+        }
+        $words = array(
+            'one' => '1', 'two' => '2', 'three' => '3',
+            'four' => '4', 'five' => '5', 'six' => '6',
+        );
+        foreach ($words as $word => $digit) {
+            $s = str_replace(' ' . $word . ' bedroom ',  ' ' . $digit . 'bedroom ', $s);
+            $s = str_replace(' ' . $word . ' bedrooms ', ' ' . $digit . 'bedroom ', $s);
+        }
+        return $s;
+    }
+
     /** Есть ли в наборе токен класса "grade" (класс/уровень номера). */
     public function roomGrouperHasGrade(array $tokens)
     {
@@ -376,10 +404,17 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
     public function roomGrouperSignature(array $tokens)
     {
         $classes = $this->roomGrouperTokenClasses();
-        $signature = array('grade' => array(), 'view' => array(), 'capacity' => array(), 'access' => array());
+        $signature = array(
+            'grade' => array(), 'view' => array(), 'capacity' => array(),
+            'access' => array(), 'bedrooms' => array(),
+        );
         foreach ($tokens as $token) {
             if (isset($classes[$token])) {
                 $signature[$classes[$token]][] = $token;
+            } elseif (preg_match('/^\d+bedroom$/', $token)) {
+                // Количество спален — критический класс: "1 Bedroom Mountain
+                // View" и "Mountain View" не должны сливаться (см. правку 15)
+                $signature['bedrooms'][] = $token;
             } elseif (substr($token, -4) === 'view') {
                 // Нераспознанный вид (лендмарк: eiffelview, landview...) —
                 // тоже критический класс "view", чтобы не сливаться с прочим
@@ -428,6 +463,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         foreach ($tokens as $token) {
             if (isset($labels[$token])) {
                 $parts[] = $labels[$token];
+            } elseif (preg_match('/^(\d+)bedroom$/', $token, $mm)) {
+                // 1bedroom -> "1 Bedroom", 2bedroom -> "2 Bedroom" ...
+                $parts[] = $mm[1] . ' Bedroom';
             } elseif (strlen($token) > 4 && substr($token, -4) === 'view') {
                 // Нераспознанный вид: eiffelview -> "Eiffel View", landview -> "Land View"
                 $parts[] = ucfirst(substr($token, 0, -4)) . ' View';
@@ -448,13 +486,28 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
      */
     public function roomGrouperCompareTokens($a, $b)
     {
-        $weights = $this->roomGrouperTokenWeights();
-        $wa = isset($weights[$a]) ? $weights[$a] : 100;
-        $wb = isset($weights[$b]) ? $weights[$b] : 100;
+        $wa = $this->roomGrouperTokenWeight($a);
+        $wb = $this->roomGrouperTokenWeight($b);
         if ($wa === $wb) {
             return strcmp($a, $b);
         }
         return ($wa < $wb) ? -1 : 1;
+    }
+
+    /** Вес токена, включая динамические ("Nbedroom", лендмарк-виды). */
+    public function roomGrouperTokenWeight($token)
+    {
+        $weights = $this->roomGrouperTokenWeights();
+        if (isset($weights[$token])) {
+            return $weights[$token];
+        }
+        if (preg_match('/^\d+bedroom$/', $token)) {
+            return 30;
+        }
+        if (substr($token, -4) === 'view') {
+            return 42; // лендмарк/прочие виды — рядом со стандартными видами
+        }
+        return 100;
     }
 
     /**
@@ -513,6 +566,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'limited sea view'   => 'partialseaview',
             'obstructed sea view' => 'partialseaview',
             'sea view partial'   => 'partialseaview',
+            'sea side'           => 'partialseaview',
             // Питание и тарифные пометки не влияют на категорию номера
             'ultra all inclusive' => '',
             'all inclusive ultra' => '',
@@ -533,10 +587,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'assigned upon arrival' => 'roh',
             'run of the house' => 'roh',
             'run of house'    => 'roh',
-            'one bedroom'     => '1bedroom',
-            'two bedroom'     => '2bedroom',
-            '1 bedroom'       => '1bedroom',
-            '2 bedroom'       => '2bedroom',
+            // Кол-во спален ("N bedroom(s)") обрабатывается в
+            // roomGrouperCollapseBedrooms(), отдельные фразы тут не нужны.
             'non smoking'     => 'nonsmoking',
             'pool view'       => 'poolview',
             'city view'       => 'cityview',
@@ -587,9 +639,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // Виды (аббревиатуры)
             'sv' => 'seaview',
             'gv' => 'gardenview',
+            'seaside' => 'partialseaview', // sea side -> ограниченный вид на море
             // Одиночный "pool" вне фраз ("Pool Villa", "Villa with Pool") означает
             // индивидуальный бассейн; вид на бассейн всегда пишется как "pool view"
             'pool' => 'privatepool',
+
+            // Пристройка/корпус: опечатки и британское написание -> annex
+            'anex' => 'annex', 'annexe' => 'annex', 'annexes' => 'annex',
 
             // Атрибуты
             'balc' => 'balcony',
@@ -631,6 +687,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'inclusive', 'included', 'ultra', 'allinclusive',
             'ai', 'uai', 'bb', 'hb', 'fb',
             'refundable', 'nonrefundable', 'nonref', 'refund', 'rate',
+            // Комментарии вида "(bed type is subject to availability)"
+            'is', 'are', 'subject', 'availability', 'available', 'type', 'types',
             // Рекламный / маркетинговый текст — не влияет на категорию номера
             'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
             'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
@@ -740,8 +798,6 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'swimup'       => 'Swim-Up',
             'poolaccess'   => 'Pool Access',
             'privatepool'  => 'Private Pool',
-            '1bedroom'     => 'One Bedroom',
-            '2bedroom'     => 'Two Bedroom',
             'roh'          => 'Run of House',
         );
     }

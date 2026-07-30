@@ -263,3 +263,32 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 15-19:
+ * 15  "Room, Mountain View" не должен наследовать "One Bedroom" чужой группы
+ * 16  "N Bedrooms" сохраняет количество (не превращается в "Bedrooms")
+ * 17  Anex / Annexe -> Annex
+ * 18  Sea Side -> Partial Sea View
+ * 19  "(bed type is subject to availability)" и любые "...subject to
+ *     availability" убираются
+ */
+$bedroomNames = array(
+    'ROOM, MOUNTAIN VIEW', 'STANDARD ONE BEDROOM MOUNTAIN VIEW',
+    'FAMILY ROOM 2 BEDROOMS', '2 BEDROOMS, FAMILY SUITE',
+    'FAMILY ROOM LAND VIEW 2 BEDROOMS', 'FAMILY ROOM 1 BEDROOM',
+    'FAMILY ROOM 3 BEDROOMS',
+    'DELUXE ROOM ANEX', 'DELUXE ROOM ANNEXE', 'DELUXE ROOM ANNEX',
+    'DELUXE ROOM SEA SIDE', 'DELUXE ROOM SEASIDE',
+    'DELUXE ROOM (BED TYPE IS SUBJECT TO AVAILABILITY)',
+    'DELUXE ROOM BED TYPE IS SUBJECT TO AVAILABILITY',
+);
+
+echo "\n--- bedrooms / annex / sea side / subject to availability ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $bedroomNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}
