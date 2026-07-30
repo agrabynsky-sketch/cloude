@@ -75,8 +75,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             foreach ($roomNames as $roomName) {
                 $tokens = $this->roomGrouperNormalize($roomName, $extraStop);
                 if (count($tokens) === 0) {
-                    // Ничего осмысленного не извлекли — отдельная категория "как есть"
-                    $tokens = array($this->roomGrouperLower(trim($roomName)));
+                    // Подстраховка: нормализация всегда возвращает хотя бы низшую
+                    // категорию, но на всякий случай не оставляем пустой набор.
+                    $tokens = array($this->roomGrouperDefaultGrade());
                 }
 
                 $key = implode('-', $tokens);
@@ -205,17 +206,14 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         // Тип кровати не участвует в группировке: номера с опциями
         // "King or Twin", "Double/Twin", "1 King Or 2 Twin" не должны
         // дробиться по кроватям и подписываться одним типом.
-        $hadBedType = false;
         foreach ($this->roomGrouperBeddingTokens() as $bedToken => $ignored) {
-            if (isset($tokens[$bedToken])) {
-                unset($tokens[$bedToken]);
-                $hadBedType = true;
-            }
+            unset($tokens[$bedToken]);
         }
 
-        // Номер, названный ТОЛЬКО по кровати ("Double", "Twin",
-        // "Double/Twin Room"), относим к самой низшей категории (Standard).
-        if ($hadBedType && count($tokens) === 0) {
+        // Если после нормализации не осталось ни одного значимого токена —
+        // номер, названный только по кровати ("Double", "Twin"), просто
+        // "Room" или один рекламный текст — относим к низшей категории.
+        if (count($tokens) === 0) {
             $tokens[$this->roomGrouperDefaultGrade()] = true;
         }
 
@@ -400,11 +398,12 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
     public function roomGrouperPhraseMap()
     {
         return array(
-            // Общий бассейн, проходящий вдоль номеров (выход прямо в бассейн)
-            'access to outdoor pool' => 'swimup',
-            'access to pool'  => 'swimup',
-            'pool access'     => 'swimup',
+            // Swim-up: номер с прямым выходом в общий бассейн вдоль номеров
             'swim up'         => 'swimup',
+            // Pool access: доступ к бассейну — отдельная категория, НЕ swim-up
+            'access to outdoor pool' => 'poolaccess',
+            'access to pool'  => 'poolaccess',
+            'pool access'     => 'poolaccess',
             // Индивидуальный бассейн в номере/на вилле
             'private pool'    => 'privatepool',
             'plunge pool'     => 'privatepool',
@@ -419,6 +418,11 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'junior suite'    => 'juniorsuite',
             'garden view'     => 'gardenview',
             'ocean view'      => 'seaview',
+            // Категория номера определяется при заезде (Run of House)
+            'room assigned on arrival' => 'roh',
+            'assigned on arrival' => 'roh',
+            'assigned upon arrival' => 'roh',
+            'run of the house' => 'roh',
             'run of house'    => 'roh',
             'one bedroom'     => '1bedroom',
             'two bedroom'     => '2bedroom',
@@ -503,7 +507,19 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'sofa', 'large', 'extra', 'bunk', 'size',
             'free', 'wifi', 'internet',
             'capacity', 'view', 'side', 'outdoor',
+            // Квалификаторы вида — вид засчитывается, ограничение отбрасывается:
+            // "Partial Sea View", "Sea View Limited" -> Sea View
+            'partial', 'limited', 'obstructed', 'inland',
             'only', 'new', 'main', 'building',
+            // Рекламный / маркетинговый текст — не влияет на категорию номера
+            'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
+            'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
+            'sale', 'special', 'specials', 'bonus', 'exclusive', 'off',
+            'early', 'bird', 'earlybird', 'last', 'minute', 'lastminute',
+            'book', 'booking', 'getaway', 'escape', 'package', 'stay',
+            'summer', 'winter', 'spring', 'autumn', 'fall',
+            'season', 'seasonal', 'holiday', 'holidays', 'festive',
+            'christmas', 'xmas', 'easter', 'newyear',
         ));
     }
 
@@ -527,9 +543,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // Вместимость (single/double/twin/queen/king — типы кроватей,
             // исключаются из группировки; triple/quad — реальная вместимость)
             'triple' => 'capacity', 'quad' => 'capacity',
-            // Бассейн: swim-up (выход в общий бассейн) и индивидуальный бассейн —
-            // разные категории, точное сравнение класса не даст им слиться
-            'swimup' => 'access', 'privatepool' => 'access',
+            // Бассейн: swim-up (выход в общий бассейн), pool access (доступ
+            // к бассейну) и индивидуальный бассейн — три разные категории,
+            // точное сравнение класса не даст им слиться
+            'swimup' => 'access', 'poolaccess' => 'access', 'privatepool' => 'access',
         );
     }
 
@@ -577,7 +594,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // Виды и доступ к бассейну
             'seaview' => 40, 'gardenview' => 40, 'cityview' => 40,
             'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
-            'privatepool' => 45,
+            'poolaccess' => 45, 'privatepool' => 45,
             // Атрибуты
             'balcony' => 50, 'terrace' => 50, 'nonsmoking' => 60,
         );
@@ -595,6 +612,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'juniorsuite'  => 'Junior Suite',
             'nonsmoking'   => 'Non-Smoking',
             'swimup'       => 'Swim-Up',
+            'poolaccess'   => 'Pool Access',
             'privatepool'  => 'Private Pool',
             '1bedroom'     => 'One Bedroom',
             '2bedroom'     => 'Two Bedroom',

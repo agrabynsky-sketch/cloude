@@ -185,3 +185,45 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Дополнительные правки:
+ *  - ограничения вида (Partial / Side / Limited Sea View) не создают
+ *    отдельных категорий — это тот же Sea View;
+ *  - Pool Access отделён от Swim-Up;
+ *  - рекламный текст (Getaway offer 15%, Summer 26...) отбрасывается;
+ *  - Room Assigned On Arrival / Run Of House / ROH — одна категория ROH;
+ *  - название "Room" (или свернувшееся в пустоту) -> низшая категория.
+ */
+$edgeNames = array(
+    // Ограничения вида
+    'DELUXE ROOM PARTIAL SEA VIEW',
+    'DELUXE ROOM SIDE SEA VIEW',
+    'DELUXE ROOM SEA VIEW LIMITED',
+    'DELUXE ROOM SEA VIEW',
+    // Pool access vs swim-up
+    'DELUXE ROOM POOL ACCESS',
+    'DELUXE ROOM WITH ACCESS TO OUTDOOR POOL',
+    'DELUXE ROOM SWIM UP',
+    // Рекламный текст
+    'STANDARD ROOM - SUMMER 26 GETAWAY OFFER 15%',
+    'STANDARD ROOM EARLY BIRD DEAL',
+    'STANDARD ROOM',
+    // ROH
+    'ROOM ASSIGNED ON ARRIVAL',
+    'RUN OF HOUSE',
+    'ROH',
+    'DELUXE RUN OF THE HOUSE',
+    // Просто "Room"
+    'ROOM',
+    'Getaway Offer 15 %',
+);
+
+echo "\n--- Виды-ограничения / pool access / промо / ROH / пустое имя ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $edgeNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}
