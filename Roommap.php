@@ -411,7 +411,15 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // "pool or sea view" должна сработать раньше "sea view"/"pool view"
             'pool or sea view' => 'poolview seaview',
             'sea or pool view' => 'seaview poolview',
-            'side sea view'   => 'seaview',
+            // Ограниченный вид на море — отдельная категория, НЕ полный Sea View
+            'partial sea view'   => 'partialseaview',
+            'partial ocean view' => 'partialseaview',
+            'side sea view'      => 'partialseaview',
+            'side ocean view'    => 'partialseaview',
+            'sea view limited'   => 'partialseaview',
+            'limited sea view'   => 'partialseaview',
+            'obstructed sea view' => 'partialseaview',
+            'sea view partial'   => 'partialseaview',
             'bed and breakfast' => '',
             'all inclusive'   => '',
             'mountain view'   => 'mountainview',
@@ -507,9 +515,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'sofa', 'large', 'extra', 'bunk', 'size',
             'free', 'wifi', 'internet',
             'capacity', 'view', 'side', 'outdoor',
-            // Квалификаторы вида — вид засчитывается, ограничение отбрасывается:
-            // "Partial Sea View", "Sea View Limited" -> Sea View
+            // Квалификаторы вида. Формы "partial/side/limited sea view"
+            // распознаются раньше как отдельный вид partialseaview (см.
+            // roomGrouperPhraseMap); здесь эти слова отбрасываются лишь как
+            // остаточный шум в прочих контекстах. "full/unobstructed sea
+            // view" — это обычный полный Sea View, квалификатор не нужен.
             'partial', 'limited', 'obstructed', 'inland',
+            'full', 'unobstructed',
             'only', 'new', 'main', 'building',
             // Рекламный / маркетинговый текст — не влияет на категорию номера
             'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
@@ -537,8 +549,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'executive' => 'grade', 'apartment' => 'grade', 'studio' => 'grade',
             'bungalow' => 'grade', 'villa' => 'grade', 'cottage' => 'grade',
             'family' => 'grade', 'duplex' => 'grade', 'roh' => 'grade',
-            // Вид из окна
-            'seaview' => 'view', 'gardenview' => 'view', 'cityview' => 'view',
+            // Вид из окна (partialseaview — ограниченный вид на море,
+            // отдельный от полного seaview)
+            'seaview' => 'view', 'partialseaview' => 'view',
+            'gardenview' => 'view', 'cityview' => 'view',
             'poolview' => 'view', 'mountainview' => 'view',
             // Вместимость (single/double/twin/queen/king — типы кроватей,
             // исключаются из группировки; triple/quad — реальная вместимость)
@@ -592,7 +606,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // Кровати / спальни
             'king' => 30, 'queen' => 30, '1bedroom' => 30, '2bedroom' => 30,
             // Виды и доступ к бассейну
-            'seaview' => 40, 'gardenview' => 40, 'cityview' => 40,
+            'seaview' => 40, 'partialseaview' => 41,
+            'gardenview' => 40, 'cityview' => 40,
             'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
             'poolaccess' => 45, 'privatepool' => 45,
             // Атрибуты
@@ -605,6 +620,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
     {
         return array(
             'seaview'      => 'Sea View',
+            'partialseaview' => 'Partial Sea View',
             'gardenview'   => 'Garden View',
             'cityview'     => 'City View',
             'poolview'     => 'Pool View',

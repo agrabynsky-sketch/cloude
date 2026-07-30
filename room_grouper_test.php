@@ -188,19 +188,20 @@ foreach ($groups as $key => $group) {
 
 /*
  * Дополнительные правки:
- *  - ограничения вида (Partial / Side / Limited Sea View) не создают
- *    отдельных категорий — это тот же Sea View;
+ *  - ограниченный вид на море (Partial / Side / Limited Sea View) —
+ *    отдельная категория "Partial Sea View", не полный Sea View;
  *  - Pool Access отделён от Swim-Up;
  *  - рекламный текст (Getaway offer 15%, Summer 26...) отбрасывается;
  *  - Room Assigned On Arrival / Run Of House / ROH — одна категория ROH;
  *  - название "Room" (или свернувшееся в пустоту) -> низшая категория.
  */
 $edgeNames = array(
-    // Ограничения вида
+    // Ограниченный вид на море -> Partial Sea View (отдельно от полного)
     'DELUXE ROOM PARTIAL SEA VIEW',
     'DELUXE ROOM SIDE SEA VIEW',
     'DELUXE ROOM SEA VIEW LIMITED',
     'DELUXE ROOM SEA VIEW',
+    'DELUXE ROOM FULL SEA VIEW',
     // Pool access vs swim-up
     'DELUXE ROOM POOL ACCESS',
     'DELUXE ROOM WITH ACCESS TO OUTDOOR POOL',
