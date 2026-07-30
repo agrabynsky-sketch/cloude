@@ -140,7 +140,7 @@ $poolNames = array(
     'VILLA WITH PRIVATE POOL',
     'POOL VILLA',
     'VILLA WITH POOL',
-    'ВИЛЛА С БАССЕЙНОМ',
+    'VILLA WITH OWN POOL',
     'VILLA WITH PLUNGE POOL',
     'DELUXE SWIM UP ROOM',
     'DELUXE ROOM POOL ACCESS',

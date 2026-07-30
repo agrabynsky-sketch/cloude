@@ -36,8 +36,8 @@
  *
  * @param array $supplierRooms массив вида:
  *        array(
- *            'ИмяПоставщика1' => array('Standard DBL Room', 'Suite Sea View', ...),
- *            'ИмяПоставщика2' => array('Двухместный стандарт', ...),
+ *            'SupplierA' => array('Standard DBL Room', 'Suite Sea View', ...),
+ *            'SupplierB' => array('STD Double', ...),
  *        )
  * @param float $similarityThreshold порог сходства Жаккара (0..1) для
  *        объединения неполностью совпадающих наборов токенов
@@ -51,8 +51,8 @@
  *                'category' => 'Deluxe Family Pool View', // сгенерированное название
  *                'tokens'   => array('deluxe', 'family', 'poolview'),
  *                'rooms'    => array(
- *                    array('supplier' => 'ИмяПоставщика1', 'name' => 'FAMILY DELUXE POOL VIEW'),
- *                    array('supplier' => 'ИмяПоставщика2', 'name' => 'Deluxe Family Room (Pool View)'),
+ *                    array('supplier' => 'SupplierA', 'name' => 'FAMILY DELUXE POOL VIEW'),
+ *                    array('supplier' => 'SupplierB', 'name' => 'Deluxe Family Room (Pool View)'),
  *                ),
  *            ),
  *            ...
@@ -141,7 +141,7 @@ function roomGrouperNormalize($name, array $extraStop = array())
     // Пунктуацию и разделители — в пробелы
     $clean = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $s);
     if ($clean === null) { // на случай отсутствия PCRE-UTF8
-        $clean = preg_replace('/[^a-z0-9а-яё]+/i', ' ', $s);
+        $clean = preg_replace('/[^a-z0-9]+/i', ' ', $s);
     }
     $s = ' ' . trim($clean) . ' ';
 
@@ -234,7 +234,7 @@ function roomGrouperStripBedConfig($s)
     foreach ($matches as $match) {
         $inner = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $match[1]);
         if ($inner === null) {
-            $inner = preg_replace('/[^a-z0-9а-яё]+/i', ' ', $match[1]);
+            $inner = preg_replace('/[^a-z0-9]+/i', ' ', $match[1]);
         }
         $words = preg_split('/\s+/u', trim($inner));
         if ($words === false || count($words) === 0) {
@@ -245,7 +245,7 @@ function roomGrouperStripBedConfig($s)
             if ($word === '') {
                 continue;
             }
-            if (!preg_match('/^(?:\d+|one|two|three|single|double|twin|queen|king|sofa|large|kids|extra|bunk|bed|beds|and|or|size|кровать|кровати|кроватей|односпальная|двуспальная)$/u', $word)) {
+            if (!preg_match('/^(?:\d+|one|two|three|single|double|twin|queen|king|sofa|large|kids|extra|bunk|bed|beds|and|or|size)$/u', $word)) {
                 $onlyBedConfig = false;
                 break;
             }
@@ -382,26 +382,14 @@ function roomGrouperPhraseMap()
         'private pool'    => 'privatepool',
         'plunge pool'     => 'privatepool',
         'own pool'        => 'privatepool',
-        'с бассейном'     => 'privatepool',
-        'частным бассейном' => 'privatepool',
-        'собственным бассейном' => 'privatepool',
         // "pool or sea view" должна сработать раньше "sea view"/"pool view"
         'pool or sea view' => 'poolview seaview',
         'sea or pool view' => 'seaview poolview',
         'side sea view'   => 'seaview',
-        'вид на бассейн'  => 'poolview',
-        'с видом на море' => 'seaview',
         'bed and breakfast' => '',
         'all inclusive'   => '',
-        'вид на город'    => 'cityview',
         'mountain view'   => 'mountainview',
-        'вид на море'     => 'seaview',
-        'вид на горы'     => 'mountainview',
-        'вид на сад'      => 'gardenview',
         'junior suite'    => 'juniorsuite',
-        'джуниор сюит'    => 'juniorsuite',
-        'для некурящих'   => 'nonsmoking',
-        'полулюкс'        => 'juniorsuite',
         'garden view'     => 'gardenview',
         'ocean view'      => 'seaview',
         'run of house'    => 'roh',
@@ -438,39 +426,23 @@ function roomGrouperSynonymMap()
 {
     return array(
         // Вместимость / тип размещения
-        'sgl' => 'single', 'sngl' => 'single', 'одноместный' => 'single',
-        'dbl' => 'double', 'dble' => 'double', 'двухместный' => 'double',
-        'двухместная' => 'double',
+        'sgl' => 'single', 'sngl' => 'single',
+        'dbl' => 'double', 'dble' => 'double',
         'casal' => 'double', // португальское "двуспальная кровать"
-        'twn' => 'twin', 'твин' => 'twin',
-        'trpl' => 'triple', 'tpl' => 'triple', 'трехместный' => 'triple',
-        'трёхместный' => 'triple',
-        'qdpl' => 'quad', 'quadruple' => 'quad', 'четырехместный' => 'quad',
-        'четырёхместный' => 'quad',
-        'fam' => 'family', 'семейный' => 'family',
+        'twn' => 'twin',
+        'trpl' => 'triple', 'tpl' => 'triple',
+        'qdpl' => 'quad', 'quadruple' => 'quad',
+        'fam' => 'family',
 
         // Класс номера
-        'std' => 'standard', 'стандарт' => 'standard',
-        'стандартный' => 'standard', 'стандартная' => 'standard',
-        'sup' => 'superior', 'супериор' => 'superior',
-        'dlx' => 'deluxe', 'делюкс' => 'deluxe',
-        'люкс' => 'suite', 'сюит' => 'suite', 'suit' => 'suite',
-        'improved' => 'superior', 'улучшенный' => 'superior',
-        'улучшенная' => 'superior',
+        'std' => 'standard',
+        'sup' => 'superior',
+        'dlx' => 'deluxe',
+        'suit' => 'suite',
+        'improved' => 'superior',
         'exec' => 'executive',
-        'econom' => 'economy', 'эконом' => 'economy',
-        'премиум' => 'premium',
-        'президентский' => 'presidential',
+        'econom' => 'economy',
         'apt' => 'apartment', 'apts' => 'apartment',
-        'апартамент' => 'apartment', 'апартаменты' => 'apartment',
-        'студия' => 'studio', 'студио' => 'studio',
-        'бунгало' => 'bungalow',
-        'вилла' => 'villa',
-        'коттедж' => 'cottage',
-
-        // Кровати
-        'кинг' => 'king',
-        'квин' => 'queen',
 
         // Виды (аббревиатуры)
         'sv' => 'seaview',
@@ -478,11 +450,9 @@ function roomGrouperSynonymMap()
         // Одиночный "pool" вне фраз ("Pool Villa", "Villa with Pool") означает
         // индивидуальный бассейн; вид на бассейн всегда пишется как "pool view"
         'pool' => 'privatepool',
-        'бассейн' => 'privatepool', 'бассейном' => 'privatepool',
 
         // Атрибуты
-        'balc' => 'balcony', 'балкон' => 'balcony', 'балконом' => 'balcony',
-        'терраса' => 'terrace', 'террасой' => 'terrace',
+        'balc' => 'balcony',
 
         // Единственное/множественное число
         'suites' => 'suite',
@@ -497,14 +467,12 @@ function roomGrouperSynonymMap()
 function roomGrouperStopWords()
 {
     return array_flip(array(
-        'room', 'rooms', 'номер', 'номера', 'комната',
+        'room', 'rooms',
         'with', 'and', 'or', 'the', 'a', 'an', 'in', 'of', 'for', 'to',
-        'с', 'и', 'или', 'на', 'в', 'для', 'без',
         'one', 'two', 'three', 'four', 'five', 'six',
-        'один', 'два', 'две', 'три', 'четыре',
-        'bed', 'beds', 'кровать', 'кроватью', 'кровати',
-        'adults', 'adult', 'взрослых', 'взрослый',
-        'kids', 'kid', 'child', 'children', 'детская',
+        'bed', 'beds',
+        'adults', 'adult',
+        'kids', 'kid', 'child', 'children',
         'sofa', 'large', 'extra', 'bunk', 'size',
         'free', 'wifi', 'internet',
         'capacity', 'view', 'side', 'outdoor',
