@@ -157,6 +157,15 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             $s = str_replace(' ' . $phrase . ' ', ' ' . $canonical . ' ', $s);
         }
 
+        // "exclusive" в НАЧАЛЕ названия — значимый признак категории, его
+        // сохраняем; в середине это обычно рекламное слово (см. стоп-слова).
+        $leadingExclusive = (strpos($s, ' exclusive ') === 0);
+
+        // Любой "<слово> view" (кроме уже распознанных видов) склеиваем в
+        // единый токен-вид: "Eiffel View" -> eiffelview, "land view" ==
+        // "landview". Так значимые/лендмарк-виды сохраняются и не дробятся.
+        $s = $this->roomGrouperCollapseViews($s);
+
         $rawTokens = preg_split('/\s+/u', trim($s));
         if ($rawTokens === false) {
             $rawTokens = explode(' ', trim($s));
@@ -172,6 +181,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             }
             // Числа сами по себе (например "2" из "capacity 2") не несут категории
             if (preg_match('/^\d+$/', $token)) {
+                continue;
+            }
+            // "2ad", "3pax" и т.п. — обозначение размещения (2 adults), игнорируем
+            if (preg_match('/^\d+(?:ad|adt|adl|adult|adults|pax|px|person|persons|guest|guests|ppl)$/', $token)) {
                 continue;
             }
             if (isset($synonyms[$token])) {
@@ -203,6 +216,11 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             }
         }
 
+        // Восстанавливаем ведущее "exclusive" как признак категории.
+        if ($leadingExclusive) {
+            $tokens['exclusive'] = true;
+        }
+
         // Тип кровати не участвует в группировке: номера с опциями
         // "King or Twin", "Double/Twin", "1 King Or 2 Twin" не должны
         // дробиться по кроватям и подписываться одним типом.
@@ -210,10 +228,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             unset($tokens[$bedToken]);
         }
 
-        // Если после нормализации не осталось ни одного значимого токена —
-        // номер, названный только по кровати ("Double", "Twin"), просто
-        // "Room" или один рекламный текст — относим к низшей категории.
-        if (count($tokens) === 0) {
+        // Если в названии нет класса/уровня номера — bare "Double"/"Triple",
+        // "Double with Balcony", просто "Room", один вид или рекламный текст —
+        // относим к самой низшей категории (Standard), сохраняя вид/признаки.
+        if (!$this->roomGrouperHasGrade($tokens)) {
             $tokens[$this->roomGrouperDefaultGrade()] = true;
         }
 
@@ -261,6 +279,72 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
     }
 
     /**
+     * Склеивает "<слово> view" в единый токен-вид "<слово>view" для видов,
+     * не распознанных фразами (лендмарки: eiffel view -> eiffelview) и для
+     * форм без пробела ("land view" == "landview"). Известные структурные
+     * слова (класс, вместимость, кровать) при этом не склеиваются.
+     *
+     * @param string $s строка в нижнем регистре, окружённая пробелами
+     * @return string
+     */
+    public function roomGrouperCollapseViews($s)
+    {
+        $result = preg_replace_callback(
+            '/(?<= )([a-z0-9]+) view(?= )/',
+            array($this, 'roomGrouperViewGlueCallback'),
+            $s
+        );
+        return ($result === null) ? $s : $result;
+    }
+
+    /** Колбэк склейки: возвращает "<слово>view" или исходное совпадение. */
+    public function roomGrouperViewGlueCallback($m)
+    {
+        $word = $m[1];
+        if ($this->roomGrouperIsStructuralWord($word)) {
+            return $m[0]; // "Superior View", "Family View" — не склеиваем
+        }
+        return $word . 'view';
+    }
+
+    /** Слово относится к известным (класс/вид/вместимость/кровать/стоп/число). */
+    public function roomGrouperIsStructuralWord($word)
+    {
+        if (preg_match('/^\d+$/', $word)) {
+            return true;
+        }
+        $stop = $this->roomGrouperStopWords();
+        if (isset($stop[$word])) {
+            return true;
+        }
+        $syn = $this->roomGrouperSynonymMap();
+        if (isset($syn[$word])) {
+            return true;
+        }
+        $classes = $this->roomGrouperTokenClasses();
+        if (isset($classes[$word])) {
+            return true;
+        }
+        $bedding = $this->roomGrouperBeddingTokens();
+        if (isset($bedding[$word])) {
+            return true;
+        }
+        return false;
+    }
+
+    /** Есть ли в наборе токен класса "grade" (класс/уровень номера). */
+    public function roomGrouperHasGrade(array $tokens)
+    {
+        $classes = $this->roomGrouperTokenClasses();
+        foreach ($tokens as $token => $ignored) {
+            if (isset($classes[$token]) && $classes[$token] === 'grade') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Токены, важные для сходства. Типы кроватей к этому моменту уже удалены
      * из набора в roomGrouperNormalize(), так что здесь возвращаются все токены.
      * Метод оставлен как точка расширения для будущих "мягких" токенов.
@@ -296,6 +380,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         foreach ($tokens as $token) {
             if (isset($classes[$token])) {
                 $signature[$classes[$token]][] = $token;
+            } elseif (substr($token, -4) === 'view') {
+                // Нераспознанный вид (лендмарк: eiffelview, landview...) —
+                // тоже критический класс "view", чтобы не сливаться с прочим
+                $signature['view'][] = $token;
             }
         }
         foreach ($signature as $class => $classTokens) {
@@ -340,6 +428,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         foreach ($tokens as $token) {
             if (isset($labels[$token])) {
                 $parts[] = $labels[$token];
+            } elseif (strlen($token) > 4 && substr($token, -4) === 'view') {
+                // Нераспознанный вид: eiffelview -> "Eiffel View", landview -> "Land View"
+                $parts[] = ucfirst(substr($token, 0, -4)) . ' View';
             } else {
                 $parts[] = ucfirst($token);
             }
@@ -416,12 +507,22 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'partial ocean view' => 'partialseaview',
             'side sea view'      => 'partialseaview',
             'side ocean view'    => 'partialseaview',
+            'lateral sea view'   => 'partialseaview',
+            'lateral ocean view' => 'partialseaview',
             'sea view limited'   => 'partialseaview',
             'limited sea view'   => 'partialseaview',
             'obstructed sea view' => 'partialseaview',
             'sea view partial'   => 'partialseaview',
+            // Питание и тарифные пометки не влияют на категорию номера
+            'ultra all inclusive' => '',
+            'all inclusive ultra' => '',
             'bed and breakfast' => '',
             'all inclusive'   => '',
+            'breakfast included' => '',
+            'dinner included' => '',
+            'lunch included'  => '',
+            'non refundable'  => '',
+            'non ref'         => '',
             'mountain view'   => 'mountainview',
             'junior suite'    => 'juniorsuite',
             'garden view'     => 'gardenview',
@@ -520,9 +621,16 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // roomGrouperPhraseMap); здесь эти слова отбрасываются лишь как
             // остаточный шум в прочих контекстах. "full/unobstructed sea
             // view" — это обычный полный Sea View, квалификатор не нужен.
-            'partial', 'limited', 'obstructed', 'inland',
+            'partial', 'limited', 'obstructed', 'inland', 'lateral',
             'full', 'unobstructed',
             'only', 'new', 'main', 'building',
+            // Размещение (2ad/3pax обрабатываются отдельно в нормализации)
+            'ad', 'adt', 'adl', 'pax', 'ppl', 'person', 'persons', 'guest', 'guests',
+            // Питание / тарифные пометки — не влияют на категорию номера
+            'breakfast', 'dinner', 'lunch', 'meal', 'meals', 'board',
+            'inclusive', 'included', 'ultra', 'allinclusive',
+            'ai', 'uai', 'bb', 'hb', 'fb',
+            'refundable', 'nonrefundable', 'nonref', 'refund', 'rate',
             // Рекламный / маркетинговый текст — не влияет на категорию номера
             'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
             'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
@@ -549,6 +657,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'executive' => 'grade', 'apartment' => 'grade', 'studio' => 'grade',
             'bungalow' => 'grade', 'villa' => 'grade', 'cottage' => 'grade',
             'family' => 'grade', 'duplex' => 'grade', 'roh' => 'grade',
+            'exclusive' => 'grade',
             // Вид из окна (partialseaview — ограниченный вид на море,
             // отдельный от полного seaview)
             'seaview' => 'view', 'partialseaview' => 'view',
@@ -597,8 +706,9 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             // Класс номера
             'economy' => 10, 'standard' => 10, 'superior' => 10, 'deluxe' => 10,
             'premium' => 10, 'suite' => 10, 'juniorsuite' => 10,
-            'presidential' => 10, 'executive' => 11, 'apartment' => 10,
-            'studio' => 10, 'bungalow' => 10, 'villa' => 10, 'cottage' => 10,
+            'presidential' => 10, 'executive' => 11, 'exclusive' => 11,
+            'apartment' => 10, 'studio' => 10, 'bungalow' => 10,
+            'villa' => 10, 'cottage' => 10,
             'family' => 12, 'duplex' => 12, 'roh' => 10,
             // Вместимость
             'single' => 20, 'double' => 20, 'twin' => 20, 'triple' => 20,

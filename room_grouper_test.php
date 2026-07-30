@@ -228,3 +228,38 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 6-14:
+ *  6  Non refundable / Non-Ref / Nonref     -> убрать из названия
+ *  7  Eiffel View и др. значимые виды        -> сохранить в названии
+ *  8  bare Triple / Quad                     -> низшая категория (Standard X)
+ *  9  All Inclusive / Breakfast Included ...  -> убрать (нет отдельных категорий)
+ * 10  2ad / 3pax                             -> игнорировать (это размещение)
+ * 11  Double with Balcony (нет Room/класса)   -> Standard Balcony (+ вид)
+ * 12  Landview == Land View, Parkview ...     -> не дробить
+ * 13  Lateral Sea View                        -> Partial Sea View
+ * 14  ведущее Exclusive                       -> сохранить в названии
+ */
+$moreNames = array(
+    'DELUXE ROOM NON REFUNDABLE', 'DELUXE ROOM NON-REF', 'DELUXE ROOM NONREF',
+    'SUPERIOR ROOM EIFFEL VIEW', 'SUPERIOR EIFFEL VIEW',
+    'TRIPLE', 'QUAD', 'TRIPLE ROOM',
+    'STANDARD ROOM ALL INCLUSIVE', 'STANDARD ROOM ULTRA ALL INCLUSIVE',
+    'STANDARD ROOM ALL INCLUSIVE ULTRA', 'STANDARD ROOM BREAKFAST INCLUDED',
+    'STANDARD ROOM DINNER INCLUDED',
+    'DELUXE ROOM 2AD', 'DELUXE ROOM 3PAX', 'DELUXE ROOM 2 ADULTS',
+    'DOUBLE WITH BALCONY', 'TWIN WITH SEA VIEW',
+    'DELUXE LANDVIEW', 'DELUXE LAND VIEW', 'DELUXE PARKVIEW', 'DELUXE PARK VIEW',
+    'DELUXE ROOM LATERAL SEA VIEW',
+    'EXCLUSIVE SEA VIEW', 'EXCLUSIVE ROOM', 'DELUXE ROOM EXCLUSIVE OFFER',
+);
+
+echo "\n--- non-ref / лендмарк-вид / triple-quad / meal / 2ad / exclusive ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $moreNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}
