@@ -309,3 +309,31 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 20-29:
+ * 20 Stadard -> Standard;               21 DWB/TWB -> тип кровати (отбрасывается)
+ * 22 PERKS -> реклама;                  23 sqm/sqft/m² -> площадь (убрать)
+ * 24 upon request -> убрать;            25 (2AD+1CH) -> размещение (убрать)
+ * 26 (extra bed not included) -> убрать;27 Luxury/Suite/Delux/... -> свой грейд
+ * 28 &amp; не превращать в "Amp";       29 Partial Seaview (слитно) -> Partial Sea View
+ */
+$batchNames = array(
+    'STADARD ROOM', 'DELUXE DWB', 'DELUXE TWB', 'STANDARD ROOM PERKS',
+    'DELUXE ROOM 25 SQM', 'DELUXE ROOM 25SQM', 'DELUXE ROOM 300 SQ FT', 'DELUXE ROOM 25M²',
+    'DELUXE ROOM UPON REQUEST', 'DELUXE ROOM (2AD+1CH)',
+    'DELUXE ROOM (EXTRA BED NOT INCLUDED)',
+    'LUXURY ROOM', 'SUITE ROOM', 'DELUX ROOM', 'SPECTACULAR ROOM',
+    'PREMIER ROOM', 'ELITE ROOM', 'PAVILION', 'VILLA',
+    'DELUXE & SUITE', 'DELUXE &amp; SUITE',
+    'DELUXE ROOM WITH PARTIAL SEAVIEW', 'DELUXE ROOM SEA VIEW',
+);
+
+echo "\n--- Stadard/DWB/PERKS/sqm/request/(2AD+1CH)/grades/&/partial seaview ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $batchNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

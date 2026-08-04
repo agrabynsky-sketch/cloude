@@ -134,6 +134,12 @@ function roomGrouperNormalize($name, array $extraStop = array())
 {
     $s = roomGrouperLower($name);
 
+    // HTML-сущности из выгрузок поставщиков ("&amp;" -> "&"), иначе
+    // после чистки пунктуации остаётся мусорный токен "amp".
+    $s = html_entity_decode($s, ENT_QUOTES, 'UTF-8');
+    // Символы площади ² / ³ -> цифры, чтобы "m²" стало "m2".
+    $s = str_replace(array('²', '³'), array('2', '3'), $s);
+
     // Скобки, содержащие ТОЛЬКО конфигурацию кроватей, вырезаются целиком:
     // "(1 QUEEN BED)", "(2 TWIN BEDS OR 1 QUEEN BED)".
     // Скобки с содержательными словами ("(POOL VIEW)", "(DELUXE)") остаются.
@@ -145,6 +151,12 @@ function roomGrouperNormalize($name, array $extraStop = array())
         $clean = preg_replace('/[^a-z0-9]+/i', ' ', $s);
     }
     $s = ' ' . trim($clean) . ' ';
+
+    // Площадь номера ("25 sqm", "25sqm", "300 sq ft", "25 m2") — убираем.
+    $noArea = preg_replace('/(?<= )\d+ ?(?:sq ?m|sq ?ft|sqmt|sqmts|sqm|sqft|m2|ft2)(?= )/', ' ', $s);
+    if ($noArea !== null) {
+        $s = ' ' . trim(preg_replace('/\s+/', ' ', $noArea)) . ' ';
+    }
 
     // Многословные обороты -> один токен (до разбиения на слова).
     // Более длинные фразы применяются первыми, чтобы "pool or sea view"
@@ -185,8 +197,9 @@ function roomGrouperNormalize($name, array $extraStop = array())
         if (preg_match('/^\d+$/', $token)) {
             continue;
         }
-        // "2ad", "3pax" и т.п. — обозначение размещения (2 adults), игнорируем
-        if (preg_match('/^\d+(?:ad|adt|adl|adult|adults|pax|px|person|persons|guest|guests|ppl)$/', $token)) {
+        // "2ad", "1ch", "3pax", "1inf" и т.п. — размещение, игнорируем
+        // (в т.ч. остатки от "(2AD+1CH)": 2ad и 1ch по отдельности)
+        if (preg_match('/^\d+(?:ad|adt|adl|adult|adults|ch|chd|child|children|kid|kids|inf|infant|infants|cnb|pax|px|person|persons|guest|guests|ppl)$/', $token)) {
             continue;
         }
         if (isset($synonyms[$token])) {
@@ -534,6 +547,17 @@ function roomGrouperPhraseMap()
         'obstructed sea view' => 'partialseaview',
         'sea view partial'   => 'partialseaview',
         'sea side'           => 'partialseaview',
+        // Те же формы, но где "seaview" написано слитно (см. правку 29)
+        'partial seaview'    => 'partialseaview',
+        'partial oceanview'  => 'partialseaview',
+        'side seaview'       => 'partialseaview',
+        'lateral seaview'    => 'partialseaview',
+        'limited seaview'    => 'partialseaview',
+        'obstructed seaview' => 'partialseaview',
+        'seaview limited'    => 'partialseaview',
+        // "upon request" / "on request" -> убрать (как subject to availability)
+        'upon request'    => '',
+        'on request'      => '',
         // Питание и тарифные пометки не влияют на категорию номера
         'ultra all inclusive' => '',
         'all inclusive ultra' => '',
@@ -589,16 +613,18 @@ function roomGrouperSynonymMap()
         'dbl' => 'double', 'dble' => 'double',
         'casal' => 'double', // португальское "двуспальная кровать"
         'twn' => 'twin',
+        'dwb' => 'double', 'twb' => 'twin', // DWB=Double Bed, TWB=Twin Bed
         'trpl' => 'triple', 'tpl' => 'triple',
         'qdpl' => 'quad', 'quadruple' => 'quad',
         'fam' => 'family',
 
         // Класс номера
         'std' => 'standard',
-        'standart' => 'standard', // частая опечатка (T на конце)
+        'standart' => 'standard', // частые опечатки
+        'stadard' => 'standard',
         'standarts' => 'standard', 'standards' => 'standard',
         'sup' => 'superior',
-        'dlx' => 'deluxe',
+        'dlx' => 'deluxe', 'delux' => 'deluxe',
         'suit' => 'suite',
         'improved' => 'superior',
         'exec' => 'executive',
@@ -649,19 +675,24 @@ function roomGrouperStopWords()
         'partial', 'limited', 'obstructed', 'inland', 'lateral',
         'full', 'unobstructed',
         'only', 'new', 'main', 'building',
-        // Размещение (2ad/3pax обрабатываются отдельно в нормализации)
-        'ad', 'adt', 'adl', 'pax', 'ppl', 'person', 'persons', 'guest', 'guests',
+        // Размещение (2ad/1ch/3pax обрабатываются отдельно в нормализации)
+        'ad', 'adt', 'adl', 'ch', 'chd', 'inf', 'infant', 'infants', 'cnb',
+        'pax', 'ppl', 'person', 'persons', 'guest', 'guests',
+        // Площадь номера (числовые формы убираются в нормализации)
+        'sqm', 'sqft', 'sqmt', 'sqmts', 'm2', 'ft2', 'sq', 'mts',
         // Питание / тарифные пометки — не влияют на категорию номера
         'breakfast', 'dinner', 'lunch', 'meal', 'meals', 'board',
         'inclusive', 'included', 'ultra', 'allinclusive',
         'ai', 'uai', 'bb', 'hb', 'fb',
         'refundable', 'nonrefundable', 'nonref', 'refund', 'rate',
-        // Комментарии вида "(bed type is subject to availability)"
+        // Комментарии: "(bed type is subject to availability)",
+        // "(extra bed not included)", "upon request"
         'is', 'are', 'subject', 'availability', 'available', 'type', 'types',
+        'not', 'excluded', 'on', 'upon', 'request', 'amp',
         // Рекламный / маркетинговый текст — не влияет на категорию номера
         'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
         'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
-        'sale', 'special', 'specials', 'bonus', 'exclusive', 'off',
+        'sale', 'special', 'specials', 'bonus', 'exclusive', 'perks', 'off',
         'early', 'bird', 'earlybird', 'last', 'minute', 'lastminute',
         'book', 'booking', 'getaway', 'escape', 'package', 'stay',
         'summer', 'winter', 'spring', 'autumn', 'fall',
@@ -684,7 +715,8 @@ function roomGrouperTokenClasses()
         'executive' => 'grade', 'apartment' => 'grade', 'studio' => 'grade',
         'bungalow' => 'grade', 'villa' => 'grade', 'cottage' => 'grade',
         'family' => 'grade', 'duplex' => 'grade', 'roh' => 'grade',
-        'exclusive' => 'grade',
+        'exclusive' => 'grade', 'luxury' => 'grade', 'spectacular' => 'grade',
+        'premier' => 'grade', 'elite' => 'grade', 'pavilion' => 'grade',
         // Вид из окна (partialseaview — ограниченный вид на море,
         // отдельный от полного seaview)
         'seaview' => 'view', 'partialseaview' => 'view',
@@ -732,6 +764,8 @@ function roomGrouperTokenWeights()
         'economy' => 10, 'standard' => 10, 'superior' => 10, 'deluxe' => 10,
         'premium' => 10, 'suite' => 10, 'juniorsuite' => 10,
         'presidential' => 10, 'executive' => 11, 'exclusive' => 11,
+        'luxury' => 10, 'spectacular' => 10, 'premier' => 10,
+        'elite' => 10, 'pavilion' => 10,
         'apartment' => 10, 'studio' => 10, 'bungalow' => 10,
         'villa' => 10, 'cottage' => 10,
         'family' => 12, 'duplex' => 12, 'roh' => 10,
