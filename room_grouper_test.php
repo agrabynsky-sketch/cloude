@@ -292,3 +292,20 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правка 20: опечатка STANDART (T на конце) == STANDARD.
+ */
+$typoNames = array(
+    'STANDART ROOM', 'STANDART DOUBLE ROOM', 'STANDARD ROOM', 'STD ROOM',
+    'STANDART SEA VIEW',
+);
+
+echo "\n--- опечатка STANDART -> STANDARD ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $typoNames));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

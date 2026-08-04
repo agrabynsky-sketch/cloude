@@ -595,6 +595,8 @@ function roomGrouperSynonymMap()
 
         // Класс номера
         'std' => 'standard',
+        'standart' => 'standard', // частая опечатка (T на конце)
+        'standarts' => 'standard', 'standards' => 'standard',
         'sup' => 'superior',
         'dlx' => 'deluxe',
         'suit' => 'suite',

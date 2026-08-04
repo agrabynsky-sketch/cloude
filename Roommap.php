@@ -628,6 +628,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
 
             // Класс номера
             'std' => 'standard',
+            'standart' => 'standard', // частая опечатка (T на конце)
+            'standarts' => 'standard', 'standards' => 'standard',
             'sup' => 'superior',
             'dlx' => 'deluxe',
             'suit' => 'suite',
