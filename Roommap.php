@@ -73,6 +73,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
                 continue;
             }
             foreach ($roomNames as $roomName) {
+                // $tokens — в порядке появления слов в названии (для показа).
                 $tokens = $this->roomGrouperNormalize($roomName, $extraStop);
                 if (count($tokens) === 0) {
                     // Подстраховка: нормализация всегда возвращает хотя бы низшую
@@ -80,9 +81,14 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
                     $tokens = array($this->roomGrouperDefaultGrade());
                 }
 
-                $key = implode('-', $tokens);
-                $signature = $this->roomGrouperSignature($tokens);
-                $simTokens = $this->roomGrouperSimilarityTokens($tokens);
+                // Отсортированная копия — только для ключа (чтобы "Sea View
+                // Superior" и "Superior Sea View" попадали в одну группу).
+                $sorted = $tokens;
+                usort($sorted, array($this, 'roomGrouperCompareTokens'));
+
+                $key = implode('-', $sorted);
+                $signature = $this->roomGrouperSignature($sorted);
+                $simTokens = $this->roomGrouperSimilarityTokens($sorted);
 
                 // 1. Точное совпадение ключа
                 if (!isset($groups[$key])) {
@@ -126,11 +132,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
     }
 
     /**
-     * Нормализация названия номера в отсортированный набор канонических токенов.
+     * Нормализация названия номера в набор канонических токенов
+     * В ПОРЯДКЕ ИХ ПОЯВЛЕНИЯ в исходном названии (для показа названия группы).
+     * Сортировка для ключа группы выполняется в groupHotelRooms().
      *
      * @param string $name исходное название номера
      * @param array $extraStop дополнительные стоп-слова (слово => true)
-     * @return array канонические токены, отсортированные по смысловому весу
+     * @return array канонические токены в порядке появления
      */
     public function roomGrouperNormalize($name, array $extraStop = array())
     {
@@ -234,11 +242,6 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             }
         }
 
-        // Восстанавливаем ведущее "exclusive" как признак категории.
-        if ($leadingExclusive) {
-            $tokens['exclusive'] = true;
-        }
-
         // Тип кровати не участвует в группировке: номера с опциями
         // "King or Twin", "Double/Twin", "1 King Or 2 Twin" не должны
         // дробиться по кроватям и подписываться одним типом.
@@ -246,17 +249,22 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             unset($tokens[$bedToken]);
         }
 
+        // Восстанавливаем ведущее "exclusive" как признак категории —
+        // ставим в начало (грейд ведёт название).
+        if ($leadingExclusive) {
+            $tokens = array('exclusive' => true) + $tokens;
+        }
+
         // Если в названии нет класса/уровня номера — bare "Double"/"Triple",
         // "Double with Balcony", просто "Room", один вид или рекламный текст —
         // относим к самой низшей категории (Standard), сохраняя вид/признаки.
         if (!$this->roomGrouperHasGrade($tokens)) {
-            $tokens[$this->roomGrouperDefaultGrade()] = true;
+            $tokens = array($this->roomGrouperDefaultGrade() => true) + $tokens;
         }
 
-        $tokens = array_keys($tokens);
-        usort($tokens, array($this, 'roomGrouperCompareTokens'));
-
-        return $tokens;
+        // Порядок токенов = порядок появления в названии (правка 30).
+        // Сортировка для ключа/сигнатуры делается в groupHotelRooms().
+        return array_keys($tokens);
     }
 
     /**

@@ -71,6 +71,7 @@ function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6, array
             continue;
         }
         foreach ($roomNames as $roomName) {
+            // $tokens — в порядке появления слов в названии (для показа).
             $tokens = roomGrouperNormalize($roomName, $extraStop);
             if (count($tokens) === 0) {
                 // Подстраховка: нормализация всегда возвращает хотя бы низшую
@@ -78,9 +79,14 @@ function groupHotelRooms(array $supplierRooms, $similarityThreshold = 0.6, array
                 $tokens = array(roomGrouperDefaultGrade());
             }
 
-            $key = implode('-', $tokens);
-            $signature = roomGrouperSignature($tokens);
-            $simTokens = roomGrouperSimilarityTokens($tokens);
+            // Отсортированная копия — только для ключа (чтобы "Sea View
+            // Superior" и "Superior Sea View" попадали в одну группу).
+            $sorted = $tokens;
+            usort($sorted, 'roomGrouperCompareTokens');
+
+            $key = implode('-', $sorted);
+            $signature = roomGrouperSignature($sorted);
+            $simTokens = roomGrouperSimilarityTokens($sorted);
 
             // 1. Точное совпадение ключа
             if (!isset($groups[$key])) {
@@ -234,26 +240,26 @@ function roomGrouperNormalize($name, array $extraStop = array())
     // Тип кровати не участвует в группировке: номера с опциями
     // "King or Twin", "Double/Twin", "1 King Or 2 Twin" не должны
     // дробиться по кроватям и подписываться одним типом.
-    // Восстанавливаем ведущее "exclusive" как признак категории.
-    if ($leadingExclusive) {
-        $tokens['exclusive'] = true;
-    }
-
     foreach (roomGrouperBeddingTokens() as $bedToken => $ignored) {
         unset($tokens[$bedToken]);
+    }
+
+    // Восстанавливаем ведущее "exclusive" как признак категории —
+    // ставим в начало (грейд ведёт название).
+    if ($leadingExclusive) {
+        $tokens = array('exclusive' => true) + $tokens;
     }
 
     // Если в названии нет класса/уровня номера — bare "Double"/"Triple",
     // "Double with Balcony", просто "Room", один вид или рекламный текст —
     // относим к самой низшей категории (Standard), сохраняя вид/признаки.
     if (!roomGrouperHasGrade($tokens)) {
-        $tokens[roomGrouperDefaultGrade()] = true;
+        $tokens = array(roomGrouperDefaultGrade() => true) + $tokens;
     }
 
-    $tokens = array_keys($tokens);
-    usort($tokens, 'roomGrouperCompareTokens');
-
-    return $tokens;
+    // Порядок токенов = порядок появления в названии (правка 30).
+    // Сортировка для ключа/сигнатуры делается в groupHotelRooms().
+    return array_keys($tokens);
 }
 
 /**
