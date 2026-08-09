@@ -149,9 +149,17 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         $s = html_entity_decode($s, ENT_QUOTES, 'UTF-8');
         // Символы площади ² / ³ -> цифры, чтобы "m²" стало "m2".
         $s = str_replace(array('²', '³'), array('2', '3'), $s);
+        // Похожие на латинскую "i" символы (кириллица/греческий/полноширинные)
+        // -> "i", чтобы опечатки в "suite" распознавались (правка 50).
+        $s = $this->roomGrouperNormalizeConfusables($s);
+
+        // Любые скобки, содержащие цифру (конфигурация кроватей, размещение:
+        // "(1 King bed + 2 Other beds)", "(Up To 3+2)", "(2AD+1CH)") —
+        // вырезаем целиком; кроме скобок про количество спален (bedroom).
+        $s = preg_replace('/\((?![^()]*bedroom)[^()]*\d[^()]*\)/u', ' ', $s);
 
         // Скобки, содержащие ТОЛЬКО конфигурацию кроватей, вырезаются целиком:
-        // "(1 QUEEN BED)", "(2 TWIN BEDS OR 1 QUEEN BED)".
+        // "(KING OR TWIN)", "(King bed + Other beds)".
         // Скобки с содержательными словами ("(POOL VIEW)", "(DELUXE)") остаются.
         $s = $this->roomGrouperStripBedConfig($s);
 
@@ -204,6 +212,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             if ($token === '' || isset($stopWords[$token]) || isset($extraStop[$token])) {
                 continue;
             }
+            // Одиночные буквы (например "s" из "Bed(s)") не несут смысла
+            if (strlen($token) === 1) {
+                continue;
+            }
             // Числа сами по себе (например "2" из "capacity 2") не несут категории
             if (preg_match('/^\d+$/', $token)) {
                 continue;
@@ -220,6 +232,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
                 continue;
             }
             $tokens[$token] = true; // уникальность
+        }
+
+        // Bare-локация без слова "view" не делит категорию по виду:
+        // "Standard Garden"/"Standard Land" -> просто Standard (правка 44).
+        // "Garden View"/"Land View" уже стали gardenview/landview выше.
+        foreach ($this->roomGrouperBareLocationDrop() as $loc => $ignored) {
+            unset($tokens[$loc]);
         }
 
         // Комбинации токенов, образующие одно понятие независимо от порядка слов
@@ -292,7 +311,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
                 if ($word === '') {
                     continue;
                 }
-                if (!preg_match('/^(?:\d+|one|two|three|single|double|twin|queen|king|sofa|large|kids|extra|bunk|bed|beds|and|or|size)$/u', $word)) {
+                if (!preg_match('/^(?:\d+|one|two|three|single|double|twin|queen|king|sofa|large|kids|extra|bunk|bed|beds|and|or|size|other|murphy|pull|trundle|rollaway|futon|day)$/u', $word)) {
                     $onlyBedConfig = false;
                     break;
                 }
@@ -553,6 +572,35 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
         return strtolower($s);
     }
 
+    /**
+     * Заменяет похожие на латинскую "i" символы (кириллица, греческий,
+     * полноширинные, dotless i) на обычную "i" — чтобы опечатки в словах
+     * вроде "suіte" (с не-латинской i) распознавались корректно (правка 50).
+     */
+    public function roomGrouperNormalizeConfusables($s)
+    {
+        $map = array(
+            "\xD1\x96" => 'i', // U+0456 cyrillic small i
+            "\xD0\x86" => 'i', // U+0406 cyrillic capital I
+            "\xCE\xB9" => 'i', // U+03B9 greek small iota
+            "\xCE\x99" => 'i', // U+0399 greek capital iota
+            "\xC4\xB1" => 'i', // U+0131 latin small dotless i
+            "\xC9\xA9" => 'i', // U+0269 latin small iota
+            "\xEF\xBD\x89" => 'i', // U+FF49 fullwidth latin small i
+            "\xEF\xBC\xA9" => 'i', // U+FF29 fullwidth latin capital I
+        );
+        return str_replace(array_keys($map), array_values($map), $s);
+    }
+
+    /**
+     * Bare-локации (без слова "view"), которые не должны делить категорию:
+     * "Standard Garden"/"Standard Land" -> просто Standard (правка 44).
+     */
+    public function roomGrouperBareLocationDrop()
+    {
+        return array('garden' => true, 'land' => true, 'park' => true);
+    }
+
     /* ------------------------------------------------------------------ *
      *  Словари. Их можно расширять по мере появления новых поставщиков —
      *  сам алгоритм при этом не меняется.
@@ -570,13 +618,39 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'access to outdoor pool' => 'poolaccess',
             'access to pool'  => 'poolaccess',
             'pool access'     => 'poolaccess',
-            // Индивидуальный бассейн в номере/на вилле
+            // Индивидуальный бассейн в номере/на вилле (в названии — "Pool")
             'private pool'    => 'privatepool',
             'plunge pool'     => 'privatepool',
             'own pool'        => 'privatepool',
+            // Pool + слово о виде -> Pool View (а НЕ индивидуальный бассейн)
+            'view of the pool' => 'poolview',
+            'view of pool'    => 'poolview',
+            'overlooking the pool' => 'poolview',
+            'overlooking pool' => 'poolview',
+            'pool side'       => 'poolview',
+            'pool facing'     => 'poolview',
+            'facing pool'     => 'poolview',
+            'pool front'      => 'poolview',
             // "pool or sea view" должна сработать раньше "sea view"/"pool view"
             'pool or sea view' => 'poolview seaview',
             'sea or pool view' => 'seaview poolview',
+            // Указан выбор из двух видов -> без определённого вида (правка 45)
+            'sea view or garden view' => '',
+            'garden view or sea view' => '',
+            'sea view or pool view'   => '',
+            'pool view or sea view'   => '',
+            'sea or garden view'      => '',
+            'garden or sea view'      => '',
+            // Джакузи: разные названия -> одна опция (правка 31)
+            'hot tub'         => 'jacuzzi',
+            'hot tube'        => 'jacuzzi',
+            'jetted tub'      => 'jacuzzi',
+            // Semi Double = Twin (правка 33)
+            'semi double'     => 'twin',
+            // Основной корпус отеля — сохраняем в названии (правка 35)
+            'main building'   => 'mainbuilding',
+            'main buildings'  => 'mainbuilding',
+            'main bulding'    => 'mainbuilding',
             // Ограниченный вид на море — отдельная категория, НЕ полный Sea View
             'partial sea view'   => 'partialseaview',
             'partial ocean view' => 'partialseaview',
@@ -594,6 +668,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'partial oceanview'  => 'partialseaview',
             'side seaview'       => 'partialseaview',
             'lateral seaview'    => 'partialseaview',
+            'lateralsea view'    => 'partialseaview',
             'limited seaview'    => 'partialseaview',
             'obstructed seaview' => 'partialseaview',
             'seaview limited'    => 'partialseaview',
@@ -656,9 +731,11 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'casal' => 'double', // португальское "двуспальная кровать"
             'twn' => 'twin',
             'dwb' => 'double', 'twb' => 'twin', // DWB=Double Bed, TWB=Twin Bed
+            'semidouble' => 'twin', // Semi Double = Twin (правка 33)
             'trpl' => 'triple', 'tpl' => 'triple',
             'qdpl' => 'quad', 'quadruple' => 'quad',
             'fam' => 'family',
+            'dorm' => 'dormitory', 'dorms' => 'dormitory',
 
             // Класс номера
             'std' => 'standard',
@@ -667,22 +744,36 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'standarts' => 'standard', 'standards' => 'standard',
             'sup' => 'superior',
             'dlx' => 'deluxe', 'delux' => 'deluxe',
-            'suit' => 'suite',
+            'suit' => 'suite', 'sute' => 'suite', 'suits' => 'suite', // опечатки
             'improved' => 'superior',
             'exec' => 'executive',
             'econom' => 'economy',
+            'eco' => 'economy', // Eco Room = Economy (правка 39)
             'apt' => 'apartment', 'apts' => 'apartment',
 
             // Виды (аббревиатуры)
             'sv' => 'seaview',
             'gv' => 'gardenview',
+            'sea' => 'seaview', // одиночное "sea" = вид на море
             'seaside' => 'partialseaview', // sea side -> ограниченный вид на море
+            'sideseaview' => 'partialseaview',   // SIDESEAVIEW (правка 41)
+            'lateralseaview' => 'partialseaview', // (правка 40)
+            'seasideview' => 'partialseaview',
+            'poolside' => 'poolview', // вид/сторона бассейна -> Pool View (правка 42)
             // Одиночный "pool" вне фраз ("Pool Villa", "Villa with Pool") означает
             // индивидуальный бассейн; вид на бассейн всегда пишется как "pool view"
             'pool' => 'privatepool',
 
             // Пристройка/корпус: опечатки и британское написание -> annex
             'anex' => 'annex', 'annexe' => 'annex', 'annexes' => 'annex',
+            // Смежные (соединённые) номера -> общий токен (правка 36)
+            'connection' => 'connecting', 'connected' => 'connecting',
+            'interconnecting' => 'connecting', 'interconnected' => 'connecting',
+            'interconnection' => 'connecting',
+
+            // Джакузи (правка 31)
+            'hottub' => 'jacuzzi', 'jacuzi' => 'jacuzzi',
+            'jaccuzzi' => 'jacuzzi', 'whirlpool' => 'jacuzzi',
 
             // Атрибуты
             'balc' => 'balcony',
@@ -728,9 +819,13 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'ai', 'uai', 'bb', 'hb', 'fb',
             'refundable', 'nonrefundable', 'nonref', 'refund', 'rate',
             // Комментарии: "(bed type is subject to availability)",
-            // "(extra bed not included)", "upon request"
+            // "(extra bed not included)", "upon request", "bed not specified"
             'is', 'are', 'subject', 'availability', 'available', 'type', 'types',
             'not', 'excluded', 'on', 'upon', 'request', 'amp',
+            'specified', 'unspecified', 'specify',
+            // Пометки о заполняемости: "Max 3 Adult", "Double Use", "Murphy Bed"
+            'max', 'maximum', 'min', 'minimum',
+            'use', 'usage', 'sole', 'murphy',
             // Рекламный / маркетинговый текст — не влияет на категорию номера
             'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
             'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
@@ -759,6 +854,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'family' => 'grade', 'duplex' => 'grade', 'roh' => 'grade',
             'exclusive' => 'grade', 'luxury' => 'grade', 'spectacular' => 'grade',
             'premier' => 'grade', 'elite' => 'grade', 'pavilion' => 'grade',
+            'dormitory' => 'grade', 'diamond' => 'grade', 'comfort' => 'grade',
             // Вид из окна (partialseaview — ограниченный вид на море,
             // отдельный от полного seaview)
             'seaview' => 'view', 'partialseaview' => 'view',
@@ -810,6 +906,7 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'presidential' => 10, 'executive' => 11, 'exclusive' => 11,
             'luxury' => 10, 'spectacular' => 10, 'premier' => 10,
             'elite' => 10, 'pavilion' => 10,
+            'dormitory' => 10, 'diamond' => 10, 'comfort' => 10,
             'apartment' => 10, 'studio' => 10, 'bungalow' => 10,
             'villa' => 10, 'cottage' => 10,
             'family' => 12, 'duplex' => 12, 'roh' => 10,
@@ -823,8 +920,10 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'gardenview' => 40, 'cityview' => 40,
             'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
             'poolaccess' => 45, 'privatepool' => 45,
-            // Атрибуты
-            'balcony' => 50, 'terrace' => 50, 'nonsmoking' => 60,
+            // Атрибуты / расположение
+            'jacuzzi' => 50, 'balcony' => 50, 'terrace' => 50,
+            'connecting' => 54, 'mainbuilding' => 55, 'annex' => 55,
+            'nonsmoking' => 60,
         );
     }
 
@@ -842,7 +941,8 @@ class Hub_Hotel_Action_Content_Roommap extends Hub_Hotel_Abstract {
             'nonsmoking'   => 'Non-Smoking',
             'swimup'       => 'Swim-Up',
             'poolaccess'   => 'Pool Access',
-            'privatepool'  => 'Private Pool',
+            'privatepool'  => 'Pool', // "With Pool"/"Pool" -> "Pool", не "Private Pool" (правка 46)
+            'mainbuilding' => 'Main Building',
             'roh'          => 'Run of House',
         );
     }

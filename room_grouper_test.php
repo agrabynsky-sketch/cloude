@@ -337,3 +337,41 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 31-50 (jacuzzi, доп. грейды, semi double, скобки с цифрами,
+ * main building, connecting, max/use/murphy/specified, eco, слитные
+ * partial seaview, pool-view vs private pool, garden/land, sea|garden,
+ * with pool, bed(s), опечатки suite с не-латинской i).
+ */
+$batch2 = array(
+    'DELUXE ROOM HOT TUB', 'DELUXE JETTED TUB', 'DELUXE ROOM JACUZZI',   // 31
+    'DORMITORY', 'DIAMOND ROOM', 'COMFORT ROOM',                        // 32
+    'SEMI DOUBLE ROOM',                                                 // 33
+    'FAMILY SUITE (1 KING BED + 2 OTHER BEDS)',                         // 34
+    'SUPERIOR MAIN BUILDING', 'SUPERIOR MAIN BULDING',                  // 35
+    'DELUXE CONNECTING', 'DELUXE CONNECTION',                           // 36
+    'DELUXE ROOM (UP TO 3+2)',                                          // 37
+    'DELUXE ROOM MAX 3 ADULT', 'DELUXE ROOM MAX 2 ADULT',               // 38
+    'ECO ROOM',                                                        // 39
+    'DELUXE LATERALSEA VIEW',                                          // 40
+    'DELUXE SIDESEAVIEW',                                              // 41
+    'STANDARD ROOM (SEA & POOL SIDE)', 'DELUXE VIEW OF POOL',           // 42
+    'DELUXE DOUBLE USE',                                               // 43
+    'STANDARD GARDEN', 'STANDARD LAND',                                // 44
+    'ROOM SEA VIEW OR GARDEN VIEW',                                    // 45
+    'DELUXE WITH POOL', 'DELUXE POOL',                                 // 46
+    'DELUXE ROOM BED(S)',                                              // 47
+    'DELUXE MURPHY BED',                                               // 48
+    'DELUXE BED NOT SPECIFIED',                                        // 49
+    "SU\xD1\x96TE ROOM", 'SUITE ROOM', 'SUTE ROOM',                    // 50
+);
+
+echo "\n--- jacuzzi/grades/main building/connecting/pool-view/garden-land/suite-typos ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $batch2));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}
