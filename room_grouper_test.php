@@ -415,3 +415,32 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 71-81 (слитное room, NO SMOK, Multiple Beds, convertible into,
+ * amenities, Guest Room, малозначимые виды, "or singles", Doble,
+ * турецкая İ, İade Edilebilir).
+ */
+$batch4 = array(
+    'SUPERIORROOM', 'STANDARDROOM', 'ECOROOM', 'SUITEROOM',       // 71
+    'DELUXE NO SMOK',                                            // 72
+    'DELUXE MULTIPLE BEDS',                                      // 73
+    '1 king bed, nonsmoking, standard room, convertible into two twin beds, air conditioning', // 74
+    'DELUXE ROOM SAFE WIFI HDTV LCD', 'DELUXE ROOM Coffee And Tea Maker', // 75
+    'GUEST ROOM', 'GUESTROOM',                                   // 76
+    'DELUXE GARDEN VIEW', 'DELUXE LAND VIEW',
+    'DELUXE COURTYARD VIEW', 'DELUXE LANDMARK VIEW',             // 77
+    'STANDARD 1 double bed or 2 singles',                       // 78
+    'DOBLE ROOM',                                               // 79
+    "\xC4\xB0ADE ED\xC4\xB0LEB\xC4\xB0L\xC4\xB0R DELUXE",         // 80, 81
+    'DELUXE SEA VIEW',                                          // контроль: вид сохраняется
+);
+
+echo "\n--- room-suffix / amenities / guest room / dropped views / turkish ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $batch4));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

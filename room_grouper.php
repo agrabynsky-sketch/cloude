@@ -232,6 +232,14 @@ function roomGrouperNormalize($name, array $extraStop = array())
         if (strlen($token) === 1) {
             continue;
         }
+        // Слитное "<слово>room" -> "<слово>" ("superiorroom" -> "superior",
+        // "standardroom", "suiteroom"...) — правка 71.
+        if (strlen($token) > 4 && substr($token, -4) === 'room') {
+            $prefix = substr($token, 0, -4);
+            if (roomGrouperIsKnownWord($prefix)) {
+                $token = $prefix;
+            }
+        }
         // Числа сами по себе (например "2" из "capacity 2") не несут категории
         if (preg_match('/^\d+$/', $token)) {
             continue;
@@ -408,6 +416,28 @@ function roomGrouperCollapseBedrooms($s)
     return $s;
 }
 
+/** Известное слово: есть в синонимах / классах / весах / типах кроватей. */
+function roomGrouperIsKnownWord($word)
+{
+    $syn = roomGrouperSynonymMap();
+    if (isset($syn[$word])) {
+        return true;
+    }
+    $classes = roomGrouperTokenClasses();
+    if (isset($classes[$word])) {
+        return true;
+    }
+    $weights = roomGrouperTokenWeights();
+    if (isset($weights[$word])) {
+        return true;
+    }
+    $bedding = roomGrouperBeddingTokens();
+    if (isset($bedding[$word])) {
+        return true;
+    }
+    return false;
+}
+
 /** Есть ли в наборе токен класса "grade" (класс/уровень номера). */
 function roomGrouperHasGrade(array $tokens)
 {
@@ -568,6 +598,8 @@ function roomGrouperNormalizeConfusables($s)
         "\xCE\xB9" => 'i', // U+03B9 greek small iota
         "\xCE\x99" => 'i', // U+0399 greek capital iota
         "\xC4\xB1" => 'i', // U+0131 latin small dotless i
+        "\xC4\xB0" => 'i', // U+0130 turkish capital dotted I (правка 80)
+        "\xCC\x87" => '',  // U+0307 combining dot above ("i̇" -> "i")
         "\xC9\xA9" => 'i', // U+0269 latin small iota
         "\xEF\xBD\x89" => 'i', // U+FF49 fullwidth latin small i
         "\xEF\xBC\xA9" => 'i', // U+FF29 fullwidth latin capital I
@@ -672,9 +704,10 @@ function roomGrouperPhraseMap()
         'mountain view'   => 'mountainview',
         'panoramic view'  => 'panoramicview', // Panoramic == Panoramic View (пр.70)
         'junior suite'    => 'juniorsuite',
-        'garden view'     => 'gardenview',
         'ocean view'      => 'seaview',
         'sea front'       => 'seaview', // Seafront = Sea View (правка 53)
+        // Guest Room — отдельная категория (правка 76)
+        'guest room'      => 'guestroom',
         // Категория номера определяется при заезде (Run of House)
         'room assigned on arrival' => 'roh',
         'assigned on arrival' => 'roh',
@@ -687,7 +720,17 @@ function roomGrouperPhraseMap()
         // Non-Smoking убираем; "smoking" (для курящих) остаётся (правка 60)
         'non smoking'     => '',
         'no smoking'      => '',
+        'no smok'         => '', // "NO SMOK" = Non-Smoking (правка 72)
+        'non smok'        => '',
         // Примечания-заметки, не влияющие на категорию номера
+        'multiple beds'   => '', // (правка 73)
+        'multiple bed'    => '',
+        'convertible into' => '', // (правка 74)
+        'air conditioning' => '', // room amenities (правка 75)
+        'coffee and tea maker' => '',
+        'coffee maker'    => '',
+        'tea maker'       => '',
+        'iade edilebilir' => '', // тур. "возвратный тариф" (правка 81)
         'travel agent flexible rate' => '', // (правки 54, 57)
         'flexible rate'   => '',
         'buffet breakfast' => '',
@@ -732,11 +775,14 @@ function roomGrouperSynonymMap()
     return array(
         // Вместимость / тип размещения
         'sgl' => 'single', 'sngl' => 'single',
-        'dbl' => 'double', 'dble' => 'double',
+        'dbl' => 'double', 'dble' => 'double', 'doble' => 'double', // (пр.79)
         'casal' => 'double', // португальское "двуспальная кровать"
         'twn' => 'twin',
         'dwb' => 'double', 'twb' => 'twin', // DWB=Double Bed, TWB=Twin Bed
         'semidouble' => 'twin', // Semi Double = Twin (правка 33)
+        // Множественное число типов кроватей (правка 78) — тоже отбрасывается
+        'singles' => 'single', 'doubles' => 'double', 'twins' => 'twin',
+        'queens' => 'queen', 'kings' => 'king',
         'trpl' => 'triple', 'tpl' => 'triple',
         'qdpl' => 'quad', 'quadruple' => 'quad',
         'fam' => 'family',
@@ -848,6 +894,16 @@ function roomGrouperStopWords()
         'spa', 'access', 'amendments', 'amendment', 'permitted',
         // Non-Smoking убираем; "smoking" (для курящих) остаётся (правка 60)
         'nonsmoking',
+        // Малозначимые виды -> не переносим в группу (правка 77)
+        'gardenview', 'landview', 'courtyardview', 'cortyardview', 'landmarkview',
+        // Трансформация кровати / несколько кроватей (правки 73, 74)
+        'multiple', 'convertible', 'convert', 'into',
+        // Room amenities (правка 75): safe, wi-fi, tv, coffee/tea maker, A/C
+        'safe', 'wi', 'fi', 'tv', 'television', 'hdt', 'hdtv', 'lcd', 'led',
+        'coffee', 'tea', 'maker', 'kettle',
+        'air', 'conditioning', 'aircon', 'airconditioning', 'ac',
+        // Тур. "İade Edilebilir" (возвратный тариф) — примечание (правка 81)
+        'iade', 'edilebilir', 'iptal',
         // Рекламный / маркетинговый текст — не влияет на категорию номера
         'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
         'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
@@ -877,6 +933,7 @@ function roomGrouperTokenClasses()
         'exclusive' => 'grade', 'luxury' => 'grade', 'spectacular' => 'grade',
         'premier' => 'grade', 'elite' => 'grade', 'pavilion' => 'grade',
         'dormitory' => 'grade', 'diamond' => 'grade', 'comfort' => 'grade',
+        'guestroom' => 'grade', // Guest Room — отдельная категория (пр.76)
         // Вид из окна (partialseaview — ограниченный вид на море,
         // отдельный от полного seaview)
         'seaview' => 'view', 'partialseaview' => 'view',
@@ -927,7 +984,7 @@ function roomGrouperTokenWeights()
         'presidential' => 10, 'executive' => 11, 'exclusive' => 11,
         'luxury' => 10, 'spectacular' => 10, 'premier' => 10,
         'elite' => 10, 'pavilion' => 10,
-        'dormitory' => 10, 'diamond' => 10, 'comfort' => 10,
+        'dormitory' => 10, 'diamond' => 10, 'comfort' => 10, 'guestroom' => 10,
         'apartment' => 10, 'studio' => 10, 'bungalow' => 10,
         'villa' => 10, 'cottage' => 10,
         'family' => 12, 'duplex' => 12, 'roh' => 10,
@@ -954,7 +1011,7 @@ function roomGrouperDisplayLabels()
     return array(
         'seaview'      => 'Sea View',
         'partialseaview' => 'Partial Sea View',
-        'gardenview'   => 'Garden View',
+        'guestroom'    => 'Guest Room',
         'cityview'     => 'City View',
         'poolview'     => 'Pool View',
         'mountainview' => 'Mountain View',
