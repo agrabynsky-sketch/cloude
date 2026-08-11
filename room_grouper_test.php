@@ -375,3 +375,43 @@ foreach ($groups as $key => $group) {
         echo "    - {$room['name']}\n";
     }
 }
+
+/*
+ * Правки 51-70 (trundle, Bedroom#, seafront, rate/meal-примечания,
+ * sitting area, private pool vs pool, "X or Y", gift/complimentary,
+ * non-smoking, parking, "...", renovated, spa access, amendments,
+ * no window, economic, fridge, w/, panoramic).
+ */
+$batch3 = array(
+    'DELUXE TRUNDLE BED',                                        // 51
+    'DELUXE ROOM (Bedroom#1: 1 extra-large double bed)',        // 52
+    'DELUXE SEAFRONT', 'DELUXE SEA VIEW',                        // 53
+    'Junior Bungalow Suite Seafront: Travel Agent Flexible Rate | Breakfast', // 54
+    'Queenbed with sitting area',                               // 55
+    'VILLA WITH PRIVATE POOL', 'VILLA WITH POOL', 'VILLA POOL',  // 56
+    'DELUXE ROOM Flexible Rate - Buffet Breakfast',
+    'DELUXE ROOM (BB NR)', 'DELUXE ROOM (BB BAR FLEX)',          // 57
+    'DELUXE BALCONY OR TERRACE',                                // 58
+    'DELUXE ROOM + VIP Perks', 'DELUXE ROOM Gift Included',
+    'DELUXE ROOM Complimentary Spa',                            // 59
+    'DELUXE NON-SMOKING', 'DELUXE NONSMOKING', 'DELUXE SMOKING', // 60
+    'JUNIOR SUITE (parking included)', 'STANDARD ROOM FREE PARKING', // 61
+    'KING BED-NONSMOKING...HISPEED 9.95/DA',                    // 62
+    'DELUXE (newly refurbished)', 'DELUXE RENOVATED', 'DELUXE (Newly Renovated)', // 63
+    'DELUXE (Spa access)',                                      // 64
+    'DELUXE No amendments permitted',                          // 65
+    'DELUXE NO WINDOW', 'DELUXE NO WINDOWS',                     // 66
+    'ECONOMIC ROOM',                                           // 67
+    'DELUXE MINI FRIDGE', 'DELUXE FRIDGE',                       // 68
+    'DELUXE W/ BALCONY', 'DELUXE W/BALCONY',                     // 69
+    'DELUXE PANORAMIC', 'DELUXE PANORAMIC VIEW',                 // 70
+);
+
+echo "\n--- trundle/bedroom#/seafront/rates/pool/or/gift/smoking/parking/... ---\n\n";
+$groups = groupHotelRooms(array('Mixed' => $batch3));
+foreach ($groups as $key => $group) {
+    echo "=== {$group['category']}  [{$key}]  (" . count($group['rooms']) . ")\n";
+    foreach ($group['rooms'] as $room) {
+        echo "    - {$room['name']}\n";
+    }
+}

@@ -149,6 +149,20 @@ function roomGrouperNormalize($name, array $extraStop = array())
     // -> "i", чтобы опечатки в "suite" распознавались (правка 50).
     $s = roomGrouperNormalizeConfusables($s);
 
+    // "..." и всё справа от них — отбрасываем (правка 62).
+    $dots = strpos($s, '...');
+    if ($dots !== false) {
+        $s = substr($s, 0, $dots) . ' ';
+    }
+    // "Gift"/"Complimentary" и всё справа — отбрасываем (правка 59).
+    $cut = preg_replace('/\b(?:gift|complimentary)\b.*$/s', ' ', $s);
+    if ($cut !== null) {
+        $s = $cut;
+    }
+
+    // Скобки с "Bedroom#1:" (конфигурация комнат) — вырезаем (правка 52).
+    $s = preg_replace('/\([^()]*bedroom\s*#[^()]*\)/u', ' ', $s);
+
     // Любые скобки, содержащие цифру (конфигурация кроватей, размещение:
     // "(1 King bed + 2 Other beds)", "(Up To 3+2)", "(2AD+1CH)") —
     // вырезаем целиком; кроме скобок про количество спален (bedroom).
@@ -193,6 +207,13 @@ function roomGrouperNormalize($name, array $extraStop = array())
     // "N bedroom(s)" / "one/two... bedroom(s)" -> токен Nbedroom, чтобы
     // количество спален не терялось ("2 Bedrooms") и не дописывалось.
     $s = roomGrouperCollapseBedrooms($s);
+
+    // "<слово> or <слово>" -> оба слова неопределённы, убираем оба
+    // ("balcony or terrace", "king or twin") — правка 58.
+    $eitherOr = preg_replace('/(?<= )[a-z0-9]+ or [a-z0-9]+(?= )/', ' ', $s);
+    if ($eitherOr !== null) {
+        $s = $eitherOr;
+    }
 
     $rawTokens = preg_split('/\s+/u', trim($s));
     if ($rawTokens === false) {
@@ -649,18 +670,39 @@ function roomGrouperPhraseMap()
         'non refundable'  => '',
         'non ref'         => '',
         'mountain view'   => 'mountainview',
+        'panoramic view'  => 'panoramicview', // Panoramic == Panoramic View (пр.70)
         'junior suite'    => 'juniorsuite',
         'garden view'     => 'gardenview',
         'ocean view'      => 'seaview',
+        'sea front'       => 'seaview', // Seafront = Sea View (правка 53)
         // Категория номера определяется при заезде (Run of House)
         'room assigned on arrival' => 'roh',
         'assigned on arrival' => 'roh',
         'assigned upon arrival' => 'roh',
         'run of the house' => 'roh',
         'run of house'    => 'roh',
-        // Кол-во спален ("N bedroom(s)") обрабатывается в
-        // roomGrouperCollapseBedrooms(), отдельные фразы тут не нужны.
-        'non smoking'     => 'nonsmoking',
+        // No Window(s) -> одна группа "No Window" (правка 66)
+        'no window'       => 'nowindow',
+        'no windows'      => 'nowindow',
+        // Non-Smoking убираем; "smoking" (для курящих) остаётся (правка 60)
+        'non smoking'     => '',
+        'no smoking'      => '',
+        // Примечания-заметки, не влияющие на категорию номера
+        'travel agent flexible rate' => '', // (правки 54, 57)
+        'flexible rate'   => '',
+        'buffet breakfast' => '',
+        'room only'       => '',
+        'bed only'        => '',
+        'sitting area'    => '', // (правка 55)
+        'seating area'    => '',
+        'living area'     => '',
+        'vip perks'       => '', // (правка 59)
+        'newly refurbished' => '', // (правка 63)
+        'newly renovated' => '',
+        'spa access'      => '', // (правка 64)
+        'no amendments permitted' => '', // (правка 65)
+        'no amendments'   => '',
+        'mini fridge'     => '', // (правка 68)
         'pool view'       => 'poolview',
         'city view'       => 'cityview',
         'sea view'        => 'seaview',
@@ -712,20 +754,23 @@ function roomGrouperSynonymMap()
         'exec' => 'executive',
         'econom' => 'economy',
         'eco' => 'economy', // Eco Room = Economy (правка 39)
+        'economic' => 'economy', // Economic = Economy (правка 67)
         'apt' => 'apartment', 'apts' => 'apartment',
 
         // Виды (аббревиатуры)
         'sv' => 'seaview',
         'gv' => 'gardenview',
         'sea' => 'seaview', // одиночное "sea" = вид на море
+        'seafront' => 'seaview', // Seafront = Sea View (правка 53)
+        'panoramic' => 'panoramicview', // Panoramic == Panoramic View (пр.70)
         'seaside' => 'partialseaview', // sea side -> ограниченный вид на море
         'sideseaview' => 'partialseaview',   // SIDESEAVIEW (правка 41)
         'lateralseaview' => 'partialseaview', // (правка 40)
         'seasideview' => 'partialseaview',
         'poolside' => 'poolview', // вид/сторона бассейна -> Pool View (правка 42)
-        // Одиночный "pool" вне фраз ("Pool Villa", "Villa with Pool") означает
-        // индивидуальный бассейн; вид на бассейн всегда пишется как "pool view"
-        'pool' => 'privatepool',
+        // Одиночный "pool" / "with pool" -> просто "Pool" (правки 46, 56);
+        // "private/plunge pool" -> отдельный "Private Pool" (см. фразы выше)
+        'windowless' => 'nowindow',
 
         // Пристройка/корпус: опечатки и британское написание -> annex
         'anex' => 'annex', 'annexe' => 'annex', 'annexes' => 'annex',
@@ -780,15 +825,29 @@ function roomGrouperStopWords()
         'breakfast', 'dinner', 'lunch', 'meal', 'meals', 'board',
         'inclusive', 'included', 'ultra', 'allinclusive',
         'ai', 'uai', 'bb', 'hb', 'fb',
-        'refundable', 'nonrefundable', 'nonref', 'refund', 'rate',
+        'refundable', 'nonrefundable', 'nonref', 'refund', 'rate', 'rates',
+        // Типы тарифов и питаний (правки 54, 57): "Flexible Rate",
+        // "Buffet Breakfast", "(BB NR)", "(BB BAR FLEX)", "Travel Agent"
+        'travel', 'agent', 'flexible', 'flex', 'buffet', 'bar', 'nr',
+        'ro', 'net', 'rack', 'corporate', 'corp',
         // Комментарии: "(bed type is subject to availability)",
         // "(extra bed not included)", "upon request", "bed not specified"
         'is', 'are', 'subject', 'availability', 'available', 'type', 'types',
-        'not', 'excluded', 'on', 'upon', 'request', 'amp',
+        'not', 'no', 'excluded', 'on', 'upon', 'request', 'amp',
         'specified', 'unspecified', 'specify',
-        // Пометки о заполняемости: "Max 3 Adult", "Double Use", "Murphy Bed"
+        // Заполняемость / зоны / оборудование (правки 51, 55, 68)
         'max', 'maximum', 'min', 'minimum',
-        'use', 'usage', 'sole', 'murphy',
+        'use', 'usage', 'sole', 'murphy', 'trundle',
+        'sitting', 'seating', 'area', 'living',
+        'fridge', 'refrigerator', 'minibar',
+        // Парковка (правка 61)
+        'parking', 'valet',
+        // Ремонт (правка 63)
+        'newly', 'refurbished', 'renovated', 'renovation', 'refurbishment', 'refurb',
+        // Спа-доступ / изменения брони (правки 64, 65)
+        'spa', 'access', 'amendments', 'amendment', 'permitted',
+        // Non-Smoking убираем; "smoking" (для курящих) остаётся (правка 60)
+        'nonsmoking',
         // Рекламный / маркетинговый текст — не влияет на категорию номера
         'offer', 'offers', 'deal', 'deals', 'discount', 'discounted',
         'promo', 'promotion', 'promotional', 'save', 'savings', 'saver',
@@ -823,13 +882,14 @@ function roomGrouperTokenClasses()
         'seaview' => 'view', 'partialseaview' => 'view',
         'gardenview' => 'view', 'cityview' => 'view',
         'poolview' => 'view', 'mountainview' => 'view',
+        'panoramicview' => 'view',
         // Вместимость (single/double/twin/queen/king — типы кроватей,
         // исключаются из группировки; triple/quad — реальная вместимость)
         'triple' => 'capacity', 'quad' => 'capacity',
-        // Бассейн: swim-up (выход в общий бассейн), pool access (доступ
-        // к бассейну) и индивидуальный бассейн — три разные категории,
-        // точное сравнение класса не даст им слиться
-        'swimup' => 'access', 'poolaccess' => 'access', 'privatepool' => 'access',
+        // Бассейн: swim-up (общий бассейн), pool access (доступ), "Pool"
+        // (with pool) и "Private Pool" — разные категории, не сливаются
+        'swimup' => 'access', 'poolaccess' => 'access',
+        'pool' => 'access', 'privatepool' => 'access',
     );
 }
 
@@ -878,13 +938,13 @@ function roomGrouperTokenWeights()
         'king' => 30, 'queen' => 30, '1bedroom' => 30, '2bedroom' => 30,
         // Виды и доступ к бассейну
         'seaview' => 40, 'partialseaview' => 41,
-        'gardenview' => 40, 'cityview' => 40,
+        'gardenview' => 40, 'cityview' => 40, 'panoramicview' => 40,
         'poolview' => 40, 'mountainview' => 40, 'swimup' => 45,
-        'poolaccess' => 45, 'privatepool' => 45,
+        'poolaccess' => 45, 'pool' => 45, 'privatepool' => 45,
         // Атрибуты / расположение
         'jacuzzi' => 50, 'balcony' => 50, 'terrace' => 50,
         'connecting' => 54, 'mainbuilding' => 55, 'annex' => 55,
-        'nonsmoking' => 60,
+        'nowindow' => 58, 'smoking' => 60,
     );
 }
 
@@ -898,12 +958,14 @@ function roomGrouperDisplayLabels()
         'cityview'     => 'City View',
         'poolview'     => 'Pool View',
         'mountainview' => 'Mountain View',
+        'panoramicview' => 'Panoramic View',
         'juniorsuite'  => 'Junior Suite',
-        'nonsmoking'   => 'Non-Smoking',
         'swimup'       => 'Swim-Up',
         'poolaccess'   => 'Pool Access',
-        'privatepool'  => 'Pool', // "With Pool"/"Pool" -> "Pool", не "Private Pool" (правка 46)
+        'pool'         => 'Pool', // "With Pool"/"Pool" -> "Pool" (правки 46, 56)
+        'privatepool'  => 'Private Pool', // "Private/Plunge Pool" (правка 56)
         'mainbuilding' => 'Main Building',
+        'nowindow'     => 'No Window',
         'roh'          => 'Run of House',
     );
 }
