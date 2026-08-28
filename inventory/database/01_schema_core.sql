@@ -155,8 +155,14 @@ CREATE TABLE rate_prices (
   date_to       DATE NOT NULL,          -- включительно
   dow_mask      TINYINT UNSIGNED NOT NULL DEFAULT 127, -- дни недели (бит 0=Пн..6=Вс)
   price         DECIMAL(10,2) NOT NULL, -- цена за ночь для этого размещения
+  -- происхождение записи (см. 04_integration.sql) -------------------
+  source        ENUM('manual','pms','channel_manager','import') NOT NULL DEFAULT 'manual',
+  connection_id INT UNSIGNED NULL,      -- какое подключение прислало (integration)
+  external_rev  BIGINT UNSIGNED NULL,   -- версия/seq источника для last-write-wins
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_price_lookup (rate_plan_id, occupancy_id, date_from, date_to)
+  KEY idx_price_lookup (rate_plan_id, occupancy_id, date_from, date_to),
+  KEY idx_price_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -178,8 +184,14 @@ CREATE TABLE rate_restrictions (
   min_advance_days SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- не раньше чем за N дней
   max_advance_days SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- не позже чем за N дней (0=нет)
   release_days     SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- срок реализации аллотмента
+  -- происхождение записи --------------------------------------------
+  source        ENUM('manual','pms','channel_manager','import') NOT NULL DEFAULT 'manual',
+  connection_id INT UNSIGNED NULL,
+  external_rev  BIGINT UNSIGNED NULL,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_restr_lookup (rate_plan_id, date_from, date_to)
+  KEY idx_restr_lookup (rate_plan_id, date_from, date_to),
+  KEY idx_restr_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -198,8 +210,14 @@ CREATE TABLE allotment_contracts (
   dow_mask      TINYINT UNSIGNED NOT NULL DEFAULT 127,
   units         SMALLINT UNSIGNED NOT NULL,
   release_days  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  -- происхождение записи --------------------------------------------
+  source        ENUM('manual','pms','channel_manager','import') NOT NULL DEFAULT 'manual',
+  connection_id INT UNSIGNED NULL,
+  external_rev  BIGINT UNSIGNED NULL,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_allot_lookup (room_type_id, date_from, date_to)
+  KEY idx_allot_lookup (room_type_id, date_from, date_to),
+  KEY idx_allot_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Посуточное фактическое наличие на категорию (пересобирается/декрементится).
@@ -207,9 +225,14 @@ CREATE TABLE allotment_contracts (
 CREATE TABLE room_availability (
   room_type_id  INT UNSIGNED NOT NULL,
   stay_date     DATE NOT NULL,
-  allotment     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
-  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
-  blocked       SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  allotment     SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- контракт (может присылать CM/PMS)
+  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- наши подтверждённые брони
+  blocked       SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- ручной stop/овербукинг-буфер
+  -- признак «наличием управляет внешняя система» (free-sell/managed) -
+  managed_by    ENUM('internal','pms','channel_manager') NOT NULL DEFAULT 'internal',
+  connection_id INT UNSIGNED NULL,
+  external_rev  BIGINT UNSIGNED NULL,   -- seq/timestamp источника (last-write-wins)
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (room_type_id, stay_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
