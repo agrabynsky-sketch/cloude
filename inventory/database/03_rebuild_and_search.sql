@@ -11,7 +11,7 @@
 --   1) Для затронутого тарифа и диапазона дат удалить строки кэша.
 --   2) Развернуть периоды цен/ограничений/аллотмента в посуточные строки,
 --      применяя dow_mask (день недели) и приоритеты периодов.
---   3) Слить с room_availability (наличие) и обязательными per-night extras.
+--   3) Слить с pool_availability (наличие) и обязательными per-night extras.
 --   4) INSERT ... в search_daily одной пачкой (batch).
 --
 --  Пример «плоского» разворота одного тарифа за диапазон дат через
@@ -22,7 +22,7 @@ DELETE FROM search_daily
  WHERE rate_plan_id = :rate_plan_id
    AND stay_date BETWEEN :from AND :to;
 
--- Разворачиваем и вставляем (наличие берём из room_availability,
+-- Разворачиваем и вставляем (наличие берём из pool_availability,
 -- обязательные per-night extras прибавляем к цене в PHP или подзапросом)
 INSERT INTO search_daily
   (hotel_id, city_id, country_id, room_type_id, rate_plan_id, board_type_id,
@@ -33,7 +33,8 @@ SELECT
    o.id, o.adults, o.children, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
-   GREATEST(CAST(av.allotment AS SIGNED) - av.booked - av.blocked, 0) AS available,
+   GREATEST(LEAST(CAST(av.allotment AS SIGNED), pool.physical_units)
+            - av.booked - av.blocked, 0) AS available,
    IFNULL(rs.min_stay,1), IFNULL(rs.max_stay,0),
    IFNULL(rs.closed_to_arrival,0), IFNULL(rs.closed_to_departure,0),
    IFNULL(rs.stop_sell,0), IFNULL(rs.min_advance_days,0), IFNULL(rs.max_advance_days,0),
@@ -41,6 +42,8 @@ SELECT
 FROM calendar cal
 JOIN rate_plans rp        ON rp.id = :rate_plan_id AND rp.active = 1
 JOIN hotels h             ON h.id = rp.hotel_id
+JOIN room_types rt        ON rt.id = rp.room_type_id
+JOIN inventory_pools pool ON pool.id = rt.pool_id          -- физический пул категории
 JOIN occupancy_options o  ON o.room_type_id = rp.room_type_id
 JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
                         AND pr.occupancy_id = o.id
@@ -49,7 +52,8 @@ JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
 LEFT JOIN rate_restrictions rs ON rs.rate_plan_id = rp.id
                         AND cal.d BETWEEN rs.date_from AND rs.date_to
                         AND (rs.dow_mask & (1 << WEEKDAY(cal.d)))
-LEFT JOIN room_availability av ON av.room_type_id = rp.room_type_id
+-- наличие берётся из ПУЛА -> общий счётчик для всех тарифов всех категорий пула
+LEFT JOIN pool_availability av ON av.pool_id = rt.pool_id
                         AND av.stay_date = cal.d
 LEFT JOIN (
      -- сумма обязательных per-night extras на тариф
@@ -150,3 +154,35 @@ GROUP BY hotel_id
 HAVING COUNT(*) = :nights
 ORDER BY approx_total ASC
 LIMIT 300;   -- список кандидатов -> в запрос (B)
+
+
+-- ---------------------------------------------------------------------
+--  D. БРОНИРОВАНИЕ — атомарный декремент ОБЩЕГО пула
+--     Ключевой момент общего inventory pool: при подтверждении брони
+--     ЛЮБОГО тарифа ЛЮБОЙ категории пула списываем номера с ОДНОГО
+--     счётчика pool_availability. Это защищает от овербукинга, когда
+--     4 тарифа Deluxe (RO/BB × Flex/NRF) делят одни 3 физических номера.
+--
+--     Делать в ОДНОЙ транзакции по всем ночам проживания. Условие
+--     available >= :rooms проверяется атомарно в самом UPDATE:
+-- ---------------------------------------------------------------------
+
+START TRANSACTION;
+
+-- на каждую ночь [checkin, checkout): списать, только если хватает
+UPDATE pool_availability
+   SET booked = booked + :rooms,
+       updated_at = NOW()
+ WHERE pool_id = :pool_id
+   AND stay_date = :night
+   AND (LEAST(allotment, (SELECT physical_units FROM inventory_pools WHERE id = :pool_id))
+        - booked - blocked) >= :rooms;
+-- если ROW_COUNT() = 0 хотя бы на одну ночь -> ROLLBACK (номеров не хватило).
+
+COMMIT;
+
+-- После успешной брони:
+--   * поставить cache_rebuild_queue scope='pool' на затронутый пул/даты
+--     (пересоберёт available во ВСЕХ тарифах всех категорий пула);
+--   * при двусторонней интеграции — положить обновление наличия в ari_outbox
+--     для отправки в PMS/Channel Manager (защита от овербукинга на их стороне).

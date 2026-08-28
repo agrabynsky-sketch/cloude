@@ -63,23 +63,42 @@ CREATE TABLE hotels (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 2. НОМЕРА (категории) и типы питания
+-- 2. ФИЗИЧЕСКИЙ ПУЛ НАЛИЧИЯ (inventory pool), НОМЕРА и типы питания
 -- ---------------------------------------------------------------------
+
+-- Пул физической доступности = «сколько реальных номеров есть».
+-- К одному пулу может быть привязано НЕСКОЛЬКО room_types (напр. «Deluxe»
+-- и «Deluxe Sea View» — одни и те же физические номера), а к каждому
+-- room_type — несколько тарифов. Аллотмент и наличие ключуются на ПУЛ,
+-- поэтому все тарифы всех этих категорий делят один счётчик номеров.
+-- Простой случай = один пул на один room_type (1:1).
+CREATE TABLE inventory_pools (
+  id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  hotel_id       INT UNSIGNED NOT NULL,
+  code           VARCHAR(32)  NOT NULL,
+  name           VARCHAR(160) NOT NULL,
+  physical_units SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- жёсткий физический потолок
+  active         TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_pool_code (hotel_id, code),
+  KEY idx_pool_hotel (hotel_id, active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE room_types (
   id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
   hotel_id       INT UNSIGNED NOT NULL,
+  pool_id        INT UNSIGNED NOT NULL,                 -- на каком физ. пуле «сидит» категория
   code           VARCHAR(32)  NOT NULL,
   name           VARCHAR(160) NOT NULL,
   base_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- «стандартное» размещение
   max_occupancy  TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- всего гостей (взр.+дети)
   max_adults     TINYINT UNSIGNED NOT NULL DEFAULT 2,
   max_children   TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  total_rooms    SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- физический фонд (потолок аллотмента)
   active         TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
   UNIQUE KEY uq_room_code (hotel_id, code),
-  KEY idx_room_hotel (hotel_id, active)
+  KEY idx_room_hotel (hotel_id, active),
+  KEY idx_room_pool (pool_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Глобальный справочник питания: RO/BB/HB/FB/AI и т.п.
@@ -195,20 +214,22 @@ CREATE TABLE rate_restrictions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ
+-- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ (на уровне ФИЗИЧЕСКОГО ПУЛА)
 --    Контракт на количество номеров — периодами. Наличие считается
 --    посуточно как allotment - booked - blocked. Хранится в отдельной
 --    посуточной таблице, т.к. меняется при каждом бронировании.
+--    КЛЮЧ — pool_id: все room_types и все их тарифы, сидящие на пуле,
+--    делят ОДИН счётчик физических номеров (см. раздел 2).
 -- ---------------------------------------------------------------------
 
--- Контракт аллотмента (периодами)
+-- Контракт аллотмента (периодами) — на физический пул
 CREATE TABLE allotment_contracts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  room_type_id  INT UNSIGNED NOT NULL,   -- аллотмент общий на категорию
+  pool_id       INT UNSIGNED NOT NULL,   -- аллотмент общий на физический пул
   date_from     DATE NOT NULL,
   date_to       DATE NOT NULL,
   dow_mask      TINYINT UNSIGNED NOT NULL DEFAULT 127,
-  units         SMALLINT UNSIGNED NOT NULL,
+  units         SMALLINT UNSIGNED NOT NULL,  -- продаваемых номеров (<= physical_units)
   release_days  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   -- происхождение записи --------------------------------------------
   source        ENUM('manual','pms','channel_manager','import') NOT NULL DEFAULT 'manual',
@@ -216,24 +237,26 @@ CREATE TABLE allotment_contracts (
   external_rev  BIGINT UNSIGNED NULL,
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_allot_lookup (room_type_id, date_from, date_to),
+  KEY idx_allot_lookup (pool_id, date_from, date_to),
   KEY idx_allot_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Посуточное фактическое наличие на категорию (пересобирается/декрементится).
--- available = allotment - booked - blocked
-CREATE TABLE room_availability (
-  room_type_id  INT UNSIGNED NOT NULL,
+-- Посуточное фактическое наличие ПУЛА (пересобирается/декрементится).
+-- available = LEAST(allotment, physical_units) - booked - blocked
+-- Это ЕДИНСТВЕННЫЙ авторитетный счётчик; при брони любого тарифа любой
+-- категории пула инкрементится booked именно здесь (атомарно, в транзакции).
+CREATE TABLE pool_availability (
+  pool_id       INT UNSIGNED NOT NULL,
   stay_date     DATE NOT NULL,
   allotment     SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- контракт (может присылать CM/PMS)
-  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- наши подтверждённые брони
+  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- подтверждённые брони по ВСЕМ тарифам пула
   blocked       SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- ручной stop/овербукинг-буфер
   -- признак «наличием управляет внешняя система» (free-sell/managed) -
   managed_by    ENUM('internal','pms','channel_manager') NOT NULL DEFAULT 'internal',
   connection_id INT UNSIGNED NULL,
   external_rev  BIGINT UNSIGNED NULL,   -- seq/timestamp источника (last-write-wins)
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (room_type_id, stay_date)
+  PRIMARY KEY (pool_id, stay_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------

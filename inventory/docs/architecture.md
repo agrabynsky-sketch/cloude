@@ -8,7 +8,7 @@ MySQL 5.6/5.7 (InnoDB, utf8mb4) + PHP как слой бизнес-логики.
 
 | Слой | Таблицы | Форма хранения | Кто пишет | Кто читает |
 |------|---------|----------------|-----------|------------|
-| **1. Конфигурация** (source of truth) | `rate_prices`, `rate_restrictions`, `allotment_contracts`, `room_availability`, политики, extras | Компактно — **периодами** (`date_from`/`date_to` + `dow_mask`) | Менеджеры / PMS / загрузка | Пересборщик кэша |
+| **1. Конфигурация** (source of truth) | `rate_prices`, `rate_restrictions`, `allotment_contracts`, `pool_availability`, политики, extras | Компактно — **периодами** (`date_from`/`date_to` + `dow_mask`) | Менеджеры / PMS / загрузка | Пересборщик кэша |
 | **2. Поисковый кэш** | `search_daily` (+ `search_best_nightly`) | Денормализованно — **посуточно**, одна строка = тариф × размещение × дата | Пересборщик (PHP/cron) | **Горячий поиск** |
 
 Конфигурация удобна для редактирования и занимает мало места (периоды).
@@ -35,26 +35,63 @@ MySQL 5.6/5.7 (InnoDB, utf8mb4) + PHP как слой бизнес-логики.
 ## 3. Модель данных (слой 1)
 
 ```
-countries → cities → hotels → room_types → rate_plans
-                                   │            ├── board_types (питание)
-                                   │            ├── occupancy_options (2взр, 2взр+1реб …)
-                                   │            ├── rate_prices        (цена: тариф×размещение×период)
-                                   │            ├── rate_restrictions  (min/max stay, CTA/CTD, stop-sell, окна)
-                                   │            ├── cancellation_policies → cancellation_rules
-                                   │            └── rate_plan_extras → extras
-                                   └── allotment_contracts → room_availability (посуточное наличие)
+countries → cities → hotels
+                        │
+                        ├── inventory_pools ──────► pool_availability   (посуточное наличие ПУЛА)
+                        │        ▲     ▲            allotment_contracts (контракт на пул)
+                        │        │     │
+                        │   room_types (1..N категорий на один физ. пул)
+                        │        │
+                        │     rate_plans (1..N тарифов на категорию)
+                        │            ├── board_types (питание)
+                        │            ├── occupancy_options (2взр, 2взр+1реб …)
+                        │            ├── rate_prices        (цена: тариф×размещение×период)
+                        │            ├── rate_restrictions  (min/max stay, CTA/CTD, stop-sell, окна)
+                        │            ├── cancellation_policies → cancellation_rules
+                        │            └── rate_plan_extras → extras
 ```
 
+- **Физический пул (`inventory_pools`)** = «сколько реально номеров есть».
+  Наличие и аллотменты ключуются на **пул**, поэтому все тарифы всех
+  категорий, сидящих на пуле, делят **один** счётчик. См. §3a.
+- **Категория (`room_types`)** — единица *мерчендайзинга*; ссылается на пул
+  (`pool_id`). Много категорий → один пул (или 1:1 в простом случае).
 - **Тариф (`rate_plans`)** = «как продаётся категория»: питание,
   отменяемость, политика отмены, валюта, битовая маска каналов.
 - **Размещение (`occupancy_options`)** перечисляет продаваемые комбинации
   гостей `(adults, children)`. Цена задаётся на тариф × размещение, поэтому
   запрос под конкретное число гостей резолвится в один `occupancy_id`.
-- **Наличие** — общее на категорию (`room_type`), считается посуточно как
-  `allotment − booked − blocked`. Бронирование декрементит `room_availability`
-  и триггерит точечную пересборку строк кэша.
+- **Наличие** считается посуточно на пуле как
+  `LEAST(allotment, physical_units) − booked − blocked`. Бронь любого тарифа
+  декрементит `pool_availability` (атомарно) и триггерит пересборку кэша по
+  всем тарифам пула.
 - **Ограничения** — CTA/CTD на дату заезда/выезда, min/max stay, stop-sell,
   окна бронирования (min/max advance), release_days для аллотмента.
+
+### 3a. Общий физический пул (inventory pool)
+
+Разные тарифы одной категории — и даже разные категории (напр. «Deluxe» и
+«Deluxe Sea View» — одни и те же комнаты) — не должны хранить независимые
+аллотменты: это **одни и те же физические номера**.
+
+Пример: Deluxe физически = 3 номера, 4 тарифа
+`101 RO/Flex, 102 BB/Flex, 103 RO/NRF, 104 BB/NRF`. Все четыре ссылаются на
+одну категорию, категория — на один `inventory_pool` с `physical_units = 3`.
+Наличие лежит в `pool_availability` **один раз на пул**, а не по три штуки на
+каждый тариф.
+
+- **Продажа любого тарифа списывает общий счётчик** — `booked` в
+  `pool_availability` для пула. Продали `101` → у `102/103/104` доступность
+  тоже упала. Овербукинг невозможен (§ запрос D — атомарный `UPDATE ... WHERE
+  available >= :rooms` в транзакции).
+- **CM/PMS** обычно моделируют инвентарь как `Room 1:N RatePlans` — наш пул
+  ровно это. ARI-обновление наличия приходит на «room» → `external_mappings`
+  → `pool_id`.
+- **Кэш** денормализует `available` в каждую строку тарифа, но источник —
+  один пул: пересборка по `scope='pool'` разворачивает изменение во все
+  тарифы всех категорий пула, значения остаются согласованными.
+- **Простой случай** (у категории свой отдельный фонд) = один пул на один
+  room_type — та же схема без накладных расходов.
 
 ## 4. Слой 2 — `search_daily`
 
@@ -144,7 +181,7 @@ cache_rebuild_queue ──► воркер ──► search_daily (Слой 2)
 | `sync_log` | Наблюдаемость: что, откуда, сколько строк, ошибки |
 
 Плюс на конфиг-таблицах (`rate_prices`, `rate_restrictions`,
-`allotment_contracts`, `room_availability`) добавлены колонки происхождения:
+`allotment_contracts`, `pool_availability`) добавлены колонки происхождения:
 `source`/`managed_by`, `connection_id`, `external_rev`, `updated_at`.
 
 ### Принципы, важные для инвенторной системы
@@ -159,7 +196,7 @@ cache_rebuild_queue ──► воркер ──► search_daily (Слой 2)
   Слой 1; поиск читает исключительно `search_daily`. Пик входящих обновлений
   не тормозит поиск, а согласованность даёт пересборка кэша через очередь.
 - **Разграничение владения.** `provider_connections.manages_*` и
-  `room_availability.managed_by` определяют, кто «владеет» ценой/наличием
+  `pool_availability.managed_by` определяют, кто «владеет» ценой/наличием
   (например, наличием управляет CM в режиме free-sell, а ручная правка
   ставит `managed_by='internal'` и игнорирует последующие пуши — политика
   разрешения конфликтов реализуется в PHP).
