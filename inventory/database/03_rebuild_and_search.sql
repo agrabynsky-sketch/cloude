@@ -26,12 +26,13 @@ DELETE FROM search_daily
 -- обязательные per-night extras прибавляем к цене в PHP или подзапросом)
 INSERT INTO search_daily
   (hotel_id, city_id, country_id, room_id, rate_plan_id, board_type_id,
-   occupancy_id, adults, children, stay_date, price, currency, available,
+   occupancy_id, adults, children, max_infants, is_refundable, stay_date,
+   price, currency, available,
    min_stay, max_stay, cta, ctd, closed, min_advance, max_advance,
    channel_mask, visibility, access_group_id)
 SELECT
    rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
-   o.id, o.adults, o.children, cal.d,
+   o.id, o.adults, o.children, rt.max_infants, rp.is_refundable, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
    GREATEST(LEAST(CAST(av.allotment AS SIGNED), rt.total_rooms)
@@ -44,7 +45,7 @@ SELECT
 FROM calendar cal
 JOIN rate_plans rp        ON rp.id = :rate_plan_id AND rp.active = 1
 JOIN hotels h             ON h.id = rp.hotel_id
-JOIN room rt        ON rt.id = rp.room_id
+JOIN room rt              ON rt.id = rp.room_id
 JOIN occupancy_options o  ON o.room_id = rp.room_id
 JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
                         AND pr.occupancy_id = o.id
@@ -97,8 +98,11 @@ WHERE cal.d BETWEEN :from AND :to;
 --    :hotels   — список hotel_id (или используйте city_id вариант)
 --    :today    — текущая дата (для окон бронирования)
 --    :groups   — набор access_group_id, доступных этому зрителю
---                (из логина аккаунта + введённого negotiated-кода);
+--                (из логина аккаунта + введённого negotiated/promo-кода);
 --                для анонима/публичного поиска = пустой -> только public
+--    :board    — board_type_id (или NULL = любой тип питания)
+--    :refundable_only — 1 = только тарифы с бесплатной отменой, иначе 0
+--    :infants  — число младенцев (проверяется против room.max_infants)
 --
 --  Идея: берём ВСЕ ночи диапазона [checkin, checkout) одним range-scan,
 --  группируем по тарифу; тариф проходит только если:
@@ -138,6 +142,9 @@ FROM (
       AND (sd.channel_mask & :channel)                       -- ось 1: канал
       AND (sd.access_group_id = 0                            -- ось 2: публичный
            OR sd.access_group_id IN ( /* :groups */ ))       --   или доступный зрителю
+      AND (:board IS NULL OR sd.board_type_id = :board)      -- тип питания
+      AND (:refundable_only = 0 OR sd.is_refundable = 1)     -- только free cancellation
+      AND sd.max_infants >= :infants                         -- вместимость по младенцам
     GROUP BY sd.hotel_id, sd.rate_plan_id
     HAVING nights = :nights
        AND cta_block = 0
@@ -186,16 +193,77 @@ FROM (
       AND sd.available >= :rooms
       AND (sd.channel_mask & :channel)
       AND (sd.access_group_id = 0 OR sd.access_group_id IN ( /* :groups */ ))
+      AND (:board IS NULL OR sd.board_type_id = :board)
+      AND (:refundable_only = 0 OR sd.is_refundable = 1)
+      AND sd.max_infants >= :infants
     GROUP BY sd.hotel_id, sd.rate_plan_id
     HAVING nights = :nights AND cta_block = 0 AND minstay_block = 0
 ) AS ok_rates
-GROUP BY hotel_id
+GROUP BY hotel_id                    -- ОДНА строка на отель = одна мин. цена за период
 ORDER BY min_total_price ASC
 LIMIT :page;   -- пагинация выдачи по городу
 
 -- Индекс idx_search_city (occupancy_id, stay_date, city_id, closed,
 -- access_group_id, price) держит это в одном range-scan. CTD добирается
 -- по дате выезда так же, как в B.
+
+
+-- ---------------------------------------------------------------------
+--  E. СТРАНИЦА ОТЕЛЯ — ВСЕ доступные румрейты за период (сырая цена)
+--     Тот же подзапрос, что в B/C, но БЕЗ внешнего MIN по отелю: отдаём
+--     каждый прошедший тариф с просуммированной СЫРОЙ ценой (без налогов
+--     и сборов — их добавит PHP на финальной цене, см. taxes_fees).
+--     Это доказывает: «одна мин. цена» в B/C — лишь внешняя агрегация;
+--     внутри уже посчитаны все румрейты.
+-- ---------------------------------------------------------------------
+
+SELECT
+    sd.room_id,
+    sd.rate_plan_id,
+    sd.board_type_id,
+    sd.is_refundable,
+    sd.currency,
+    SUM(sd.price)  AS total_raw_price,   -- сырая сумма за период (нетто)
+    MIN(sd.available) AS min_avail
+FROM search_daily sd
+WHERE sd.hotel_id = :hotel                    -- один отель
+  AND sd.occupancy_id = :occ
+  AND sd.stay_date >= :checkin
+  AND sd.stay_date <  :checkout
+  AND sd.closed = 0
+  AND sd.available >= :rooms
+  AND (sd.channel_mask & :channel)
+  AND (sd.access_group_id = 0 OR sd.access_group_id IN ( /* :groups */ ))
+  AND (:board IS NULL OR sd.board_type_id = :board)
+  AND (:refundable_only = 0 OR sd.is_refundable = 1)
+  AND sd.max_infants >= :infants
+GROUP BY sd.room_id, sd.rate_plan_id, sd.board_type_id, sd.is_refundable, sd.currency
+HAVING COUNT(*) = :nights
+   AND MAX(CASE WHEN sd.stay_date = :checkin AND sd.cta = 1 THEN 1 ELSE 0 END) = 0
+   AND MAX(CASE WHEN sd.stay_date = :checkin AND sd.min_stay > :nights THEN 1 ELSE 0 END) = 0
+   -- + max_stay / advance аналогично B
+ORDER BY total_raw_price ASC;
+-- PHP далее: налоги/сборы (taxes_fees), опциональные extras, наценка,
+-- конвертация валют, штраф отмены (cancellation_rules) — на этих строках.
+
+
+-- ---------------------------------------------------------------------
+--  F. MULTIROOM-ПОИСК (несколько номеров, одинаковые/разные категории)
+--     Каждый «номер» из запроса — отдельная НОГА поиска со своим
+--     occupancy_id (2 взр; 2 взр + ребёнок; и т.п.). Схема поддерживает
+--     multiroom БЕЗ изменений — оркестрация в PHP:
+--       1) сгруппировать запрошенные номера по (occupancy_id) -> qty;
+--       2) для одинаковых номеров одной категории: искать с :rooms = qty
+--          (available >= qty на каждую ночь уже гарантирует общий фонд);
+--       3) для РАЗНЫХ occupancy/категорий: выполнить запрос E по каждой
+--          ноге, затем скомбинировать в PHP (сумма мин. цен ног);
+--       4) ВАЖНО про общий фонд: если несколько ног тянут из ОДНОЙ
+--          категории (room_id), суммарный спрос по ней = сумма qty ног;
+--          финальную достаточность гарантирует атомарный декремент при
+--          брони (запрос D: одна транзакция, все ночи, все номера).
+--     Т.е. поиск — это N независимых прогонов B/E + сборка в PHP; общий
+--     счётчик наличия на room делает результат корректным при брони.
+-- ---------------------------------------------------------------------
 
 
 -- ---------------------------------------------------------------------

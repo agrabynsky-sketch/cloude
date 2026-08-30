@@ -388,4 +388,87 @@ CREATE TABLE rate_plan_extras (
   PRIMARY KEY (rate_plan_id, extra_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ---------------------------------------------------------------------
+-- 10. НАЛОГИ И СБОРЫ (VAT, городской/курортный сбор) — на уровне отеля
+--     Флаг included_in_price решает: уже в цене (справочно) или PHP
+--     добавляет к финальной цене. В горячий поиск НЕ входят — считаются
+--     на выбранных строках (запрос E), поэтому не тормозят выдачу.
+-- ---------------------------------------------------------------------
+CREATE TABLE taxes_fees (
+  id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  hotel_id          INT UNSIGNED NOT NULL,
+  kind              ENUM('vat','city_tax','resort_fee','service','other') NOT NULL,
+  name              VARCHAR(120) NOT NULL,
+  calc_type         ENUM('percent','per_night_per_person','per_night_per_room','per_stay_per_person','fixed') NOT NULL,
+  value             DECIMAL(10,4) NOT NULL,      -- percent: 20.0000 = 20%; иначе сумма
+  currency          CHAR(3) NULL,                -- для суммовых типов
+  included_in_price TINYINT(1) NOT NULL DEFAULT 0, -- 1 = уже включено; 0 = добавляется
+  -- необязательные ограничения применения
+  applies_from      DATE NULL,
+  applies_to        DATE NULL,
+  age_min           TINYINT UNSIGNED NULL,       -- напр. city tax только для взрослых
+  sort              SMALLINT NOT NULL DEFAULT 0, -- порядок применения (важно для НДС поверх сборов)
+  active            TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  KEY idx_tax_hotel (hotel_id, active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------
+-- 11. ПИТАНИЕ КАК SUPPLEMENT (доплата за тип питания)
+--     ОСНОВНОЙ путь — питание «вплавлено» в тариф (rate_plans.board_type_id)
+--     и его цену: поиск остаётся быстрым (см. доку §6). Эта таблица — для
+--     UPSELL: показать «RO + за завтрак +X» на странице отеля/оформлении.
+--     В горячий поиск НЕ входит; PHP считает доплату на выбранных строках.
+-- ---------------------------------------------------------------------
+CREATE TABLE board_supplements (
+  id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  room_id       INT UNSIGNED NOT NULL,           -- к какой категории
+  board_type_id TINYINT UNSIGNED NOT NULL,       -- какой апгрейд питания
+  date_from     DATE NOT NULL,
+  date_to       DATE NOT NULL,
+  charge_type   ENUM('per_person_night','per_night','per_person_stay') NOT NULL DEFAULT 'per_person_night',
+  adult_price   DECIMAL(10,2) NOT NULL,
+  child_price   DECIMAL(10,2) NOT NULL DEFAULT 0,
+  currency      CHAR(3) NOT NULL DEFAULT 'EUR',
+  PRIMARY KEY (id),
+  KEY idx_boardsup (room_id, board_type_id, date_from, date_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------
+-- 12. КОНФИГУРАЦИЯ КОМНАТ И КРОВАТЕЙ (как у Booking.com)
+--     room -> room_spaces (bedroom/livingroom/...) -> кровати в каждой.
+--     Чисто описательные данные для карточки; в горячий поиск НЕ входят.
+--     Вместимость по-прежнему считается по occupancy_options/room, но
+--     сумма спальных мест здесь может её валидировать в PHP.
+-- ---------------------------------------------------------------------
+CREATE TABLE bed_types (
+  id    TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  code  VARCHAR(24) NOT NULL,          -- single, double, king, queen, sofa, bunk, crib
+  name  VARCHAR(80) NOT NULL,
+  sleeps TINYINT UNSIGNED NOT NULL DEFAULT 1,  -- сколько гостей вмещает
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_bed_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Комнаты внутри номера (для многокомнатных: 1 bedroom + 1 livingroom)
+CREATE TABLE room_spaces (
+  id        INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  room_id   INT UNSIGNED NOT NULL,
+  space_type ENUM('bedroom','livingroom','other') NOT NULL,
+  idx       TINYINT UNSIGNED NOT NULL DEFAULT 1,  -- Bedroom 1, Bedroom 2 ...
+  name      VARCHAR(80) NULL,
+  PRIMARY KEY (id),
+  KEY idx_space_room (room_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Кровати в конкретной комнате номера
+CREATE TABLE room_space_beds (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  space_id    INT UNSIGNED NOT NULL,
+  bed_type_id TINYINT UNSIGNED NOT NULL,
+  qty         TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  KEY idx_bed_space (space_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET foreign_key_checks = 1;

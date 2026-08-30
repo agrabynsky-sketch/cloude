@@ -24,10 +24,12 @@ CREATE TABLE search_daily (
   country_id     SMALLINT UNSIGNED NOT NULL,
   room_id        INT UNSIGNED     NOT NULL,
   rate_plan_id   INT UNSIGNED     NOT NULL,
-  board_type_id  TINYINT UNSIGNED NOT NULL,
+  board_type_id  TINYINT UNSIGNED NOT NULL,   -- фильтр по типу питания
   occupancy_id   SMALLINT UNSIGNED NOT NULL,
   adults         TINYINT UNSIGNED NOT NULL,   -- денормализовано для фильтра
   children       TINYINT UNSIGNED NOT NULL,
+  max_infants    TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- вместимость по младенцам (room)
+  is_refundable  TINYINT(1)       NOT NULL DEFAULT 1,  -- фильтр «только с бесплатной отменой»
   stay_date      DATE             NOT NULL,
 
   -- цена (уже в валюте отеля, вкл. обязательные per-night extras) ---

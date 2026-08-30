@@ -12,6 +12,17 @@ INSERT INTO room_views (id, code, name) VALUES
   (4, 'lake',     'Lake view'),
   (5, 'mountain', 'Mountain view');   -- в тз было дублем 'lake'; уточнить
 
+-- Типы кроватей (room_space_beds.bed_type_id)
+INSERT INTO bed_types (code, name, sleeps) VALUES
+  ('single', 'Single bed',       1),
+  ('double', 'Double bed',       2),
+  ('queen',  'Queen bed',        2),
+  ('king',   'King bed',         2),
+  ('twin',   'Twin bed',         1),
+  ('sofa',   'Sofa bed',         1),
+  ('bunk',   'Bunk bed',         2),
+  ('crib',   'Crib / cot',       1);
+
 -- Типы питания
 INSERT INTO board_types (code, name) VALUES
   ('RO','Room Only'),
