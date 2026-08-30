@@ -144,22 +144,44 @@ GROUP BY hotel_id;
 
 
 -- ---------------------------------------------------------------------
---  C. Быстрый ПЕРВЫЙ ОТБОР по городу через Tier-3 (search_best_nightly)
---     Мгновенно отсекает отели, где даже минимальная ночь не влезает в
---     бюджет/нет наличия; далее точный расчёт (B) только по кандидатам.
+--  C. ПОИСК ПО ГОРОДУ/ЛОКАЦИИ — мин. цена отеля за ВЕСЬ период
+--     Это тот же запрос B, но вместо списка hotel_id фильтруем по city_id
+--     (денормализован в search_daily -> без JOIN). Возвращает точную
+--     минимальную цену за период проживания по каждому отелю города —
+--     ровно то, что показывается в выдаче Unit.Travel.
+--     Никакого понедельного предагрегата: SUM идёт ВНУТРИ одного тарифа
+--     (после GROUP BY rate_plan_id), поэтому цена реально бронируемая.
 -- ---------------------------------------------------------------------
 
-SELECT hotel_id, SUM(min_price) AS approx_total
-FROM search_best_nightly
-WHERE occupancy_id = :occ
-  AND city_id = :city
-  AND stay_date >= :checkin
-  AND stay_date <  :checkout
-  AND max_available >= :rooms
+SELECT hotel_id, MIN(total_price) AS min_total_price
+FROM (
+    SELECT
+        sd.hotel_id,
+        sd.rate_plan_id,
+        SUM(sd.price)                                  AS total_price,
+        COUNT(*)                                       AS nights,
+        MAX(CASE WHEN sd.stay_date = :checkin AND sd.cta = 1 THEN 1 ELSE 0 END)             AS cta_block,
+        MAX(CASE WHEN sd.stay_date = :checkin AND sd.min_stay > :nights THEN 1 ELSE 0 END)  AS minstay_block
+        -- + max_stay / min_advance / max_advance аналогично запросу B
+    FROM search_daily sd
+    WHERE sd.occupancy_id = :occ
+      AND sd.stay_date >= :checkin
+      AND sd.stay_date <  :checkout
+      AND sd.city_id = :city                                  -- поиск по городу
+      AND sd.closed = 0
+      AND sd.available >= :rooms
+      AND (sd.channel_mask & :channel)
+      AND (sd.access_group_id = 0 OR sd.access_group_id IN ( /* :groups */ ))
+    GROUP BY sd.hotel_id, sd.rate_plan_id
+    HAVING nights = :nights AND cta_block = 0 AND minstay_block = 0
+) AS ok_rates
 GROUP BY hotel_id
-HAVING COUNT(*) = :nights
-ORDER BY approx_total ASC
-LIMIT 300;   -- список кандидатов -> в запрос (B)
+ORDER BY min_total_price ASC
+LIMIT :page;   -- пагинация выдачи по городу
+
+-- Индекс idx_search_city (occupancy_id, stay_date, city_id, closed,
+-- access_group_id, price) держит это в одном range-scan. CTD добирается
+-- по дате выезда так же, как в B.
 
 
 -- ---------------------------------------------------------------------
