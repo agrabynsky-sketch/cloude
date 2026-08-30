@@ -25,8 +25,11 @@ CREATE TABLE search_daily (
   room_id        INT UNSIGNED     NOT NULL,
   rate_plan_id   INT UNSIGNED     NOT NULL,
   board_type_id  TINYINT UNSIGNED NOT NULL,   -- фильтр по типу питания
+  -- ГЛОБАЛЬНЫЙ ключ размещения = adults*100+children (room-independent!).
+  -- В отличие от per-room occupancy_options.id, одинаков во ВСЕХ отелях,
+  -- поэтому :occ фильтрует сразу сотни отелей одним значением.
   occupancy_id   SMALLINT UNSIGNED NOT NULL,
-  adults         TINYINT UNSIGNED NOT NULL,   -- денормализовано для фильтра
+  adults         TINYINT UNSIGNED NOT NULL,   -- денормализовано (для вывода/отладки)
   children       TINYINT UNSIGNED NOT NULL,
   max_infants    TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- вместимость по младенцам (room)
   is_refundable  TINYINT(1)       NOT NULL DEFAULT 1,  -- фильтр «только с бесплатной отменой»
@@ -55,16 +58,26 @@ CREATE TABLE search_daily (
 
   PRIMARY KEY (rate_plan_id, occupancy_id, stay_date),
 
-  -- ГЛАВНЫЙ покрывающий индекс поиска.
-  -- Порядок колонок: сначала равенство (occupancy_id), затем диапазон
-  -- по дате, затем фильтр отелей и цена — чтобы range-scan был плотным,
-  -- а движок мог отдавать данные из индекса (index-only).
-  KEY idx_search (occupancy_id, stay_date, hotel_id, closed, access_group_id,
-                  price, available, rate_plan_id, min_stay, max_stay,
-                  cta, ctd, channel_mask),
+  -- ------------------------------------------------------------------
+  -- ПОКРЫВАЮЩИЕ ИНДЕКСЫ ПОИСКА. КРИТИЧНО: колонки-РАВЕНСТВА идут ДО
+  -- диапазона по дате. Диапазон (stay_date BETWEEN) «обрывает» индекс —
+  -- всё, что стоит ПОСЛЕ него, движок для отсева использовать уже не
+  -- может. Поэтому локация (hotel_id / city_id) стоит ПЕРЕД stay_date.
+  -- Проверено нагрузкой (16.4M строк): при обратном порядке одиночный
+  -- отель искался ~1000 мс, при правильном — ~0.3 мс (см. demo/README).
+  -- ------------------------------------------------------------------
 
-  -- поиск по городу
-  KEY idx_search_city (occupancy_id, stay_date, city_id, closed, access_group_id, price),
+  -- Поиск по списку отелей (B) и странице одного отеля (E):
+  --   occupancy_id(=) , hotel_id(= / IN) , stay_date(range) , затем payload
+  KEY idx_hotel (occupancy_id, hotel_id, stay_date, closed, access_group_id,
+                 available, is_refundable, board_type_id, max_infants,
+                 price, rate_plan_id, room_id, min_stay, cta, channel_mask),
+
+  -- Поиск по городу/локации (C):
+  --   occupancy_id(=) , city_id(=) , stay_date(range) , затем payload
+  KEY idx_city  (occupancy_id, city_id, stay_date, closed, access_group_id,
+                 available, is_refundable, board_type_id, max_infants,
+                 price, rate_plan_id, room_id, min_stay, cta, channel_mask),
 
   -- обслуживание/чистка по датам
   KEY idx_stay_date (stay_date)

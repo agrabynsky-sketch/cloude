@@ -32,7 +32,8 @@ INSERT INTO search_daily
    channel_mask, visibility, access_group_id)
 SELECT
    rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
-   o.id, o.adults, o.children, rt.max_infants, rp.is_refundable, cal.d,
+   (o.adults*100 + o.children), o.adults, o.children,   -- occupancy_id = глоб. ключ
+   rt.max_infants, rp.is_refundable, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
    GREATEST(LEAST(CAST(av.allotment AS SIGNED), rt.total_rooms)
@@ -92,7 +93,7 @@ WHERE cal.d BETWEEN :from AND :to;
 --  Вход из PHP:
 --    :checkin  — дата заезда
 --    :checkout — дата выезда  (ночей = DATEDIFF(:checkout,:checkin) = :nights)
---    :occ      — occupancy_id, разрешённый из (adults, children)
+--    :occ      — глобальный ключ размещения = adults*100 + children
 --    :rooms    — сколько номеров нужно (обычно 1)
 --    :channel  — бит канала (напр. 1 = web B2C, 2 = b2b, ...)
 --    :hotels   — список hotel_id (или используйте city_id вариант)
@@ -203,8 +204,8 @@ GROUP BY hotel_id                    -- ОДНА строка на отель = 
 ORDER BY min_total_price ASC
 LIMIT :page;   -- пагинация выдачи по городу
 
--- Индекс idx_search_city (occupancy_id, stay_date, city_id, closed,
--- access_group_id, price) держит это в одном range-scan. CTD добирается
+-- Индекс idx_city (occupancy_id, city_id, stay_date, closed,
+-- available, ...) держит это в одном range-scan. CTD добирается
 -- по дате выезда так же, как в B.
 
 
