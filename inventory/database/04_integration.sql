@@ -127,8 +127,8 @@ CREATE TABLE ari_outbox (
 -- ---------------------------------------------------------------------
 CREATE TABLE cache_rebuild_queue (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  scope         ENUM('rate_plan','room_type','pool','hotel') NOT NULL,
-  scope_id      INT UNSIGNED NOT NULL,           -- rate_plan_id / room_type_id / pool_id / hotel_id
+  scope         ENUM('rate_plan','room_type','hotel') NOT NULL,
+  scope_id      INT UNSIGNED NOT NULL,           -- rate_plan_id / room_type_id / hotel_id
   date_from     DATE NOT NULL,
   date_to       DATE NOT NULL,
   reason        VARCHAR(40) NOT NULL,            -- 'ari_rate','ari_avail','booking','manual'
@@ -168,14 +168,13 @@ INSERT IGNORE INTO ari_inbox
 VALUES (:conn, :uid, :type, :rev, :payload);
 
 -- (b) Применение обновления НАЛИЧИЯ с last-write-wins по external_rev.
---     Наличие ключуется на ПУЛ: CM обычно шлёт номер по «room», PHP через
---     external_mappings резолвит его в pool_id. Обновляем только если
---     пришедшая ревизия не старше сохранённой и подключению разрешено
---     управлять наличием (проверяется в PHP).
-INSERT INTO pool_availability
-   (pool_id, stay_date, allotment, booked, blocked,
+--     Наличие ключуется на КАТЕГОРИЮ: CM шлёт «room» -> external_mappings
+--     резолвит его в room_type_id. Обновляем только если пришедшая ревизия
+--     не старше сохранённой и подключению разрешено управлять наличием.
+INSERT INTO room_availability
+   (room_type_id, stay_date, allotment, booked, blocked,
     managed_by, connection_id, external_rev, updated_at)
-VALUES (:pool_id, :date, :allotment, 0, 0,
+VALUES (:room_type_id, :date, :allotment, 0, 0,
         'channel_manager', :conn, :rev, NOW())
 ON DUPLICATE KEY UPDATE
    allotment     = IF(:rev >= IFNULL(external_rev,0), VALUES(allotment), allotment),
@@ -184,7 +183,7 @@ ON DUPLICATE KEY UPDATE
    external_rev  = IF(:rev >= IFNULL(external_rev,0), VALUES(external_rev), external_rev),
    updated_at    = NOW();
 
--- (c) Поставить задачу на пересборку кэша по затронутому пулу и диапазону.
---     Воркер развернёт её в ВСЕ тарифы всех room_types этого пула.
+-- (c) Поставить задачу на пересборку кэша по затронутой категории и диапазону.
+--     Воркер развернёт её в ВСЕ тарифы этого room_type.
 INSERT INTO cache_rebuild_queue (scope, scope_id, date_from, date_to, reason)
-VALUES ('pool', :pool_id, :date_from, :date_to, 'ari_avail');
+VALUES ('room_type', :room_type_id, :date_from, :date_to, 'ari_avail');

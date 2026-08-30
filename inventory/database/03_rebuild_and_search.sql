@@ -11,7 +11,7 @@
 --   1) Для затронутого тарифа и диапазона дат удалить строки кэша.
 --   2) Развернуть периоды цен/ограничений/аллотмента в посуточные строки,
 --      применяя dow_mask (день недели) и приоритеты периодов.
---   3) Слить с pool_availability (наличие) и обязательными per-night extras.
+--   3) Слить с room_availability (наличие) и обязательными per-night extras.
 --   4) INSERT ... в search_daily одной пачкой (batch).
 --
 --  Пример «плоского» разворота одного тарифа за диапазон дат через
@@ -22,28 +22,29 @@ DELETE FROM search_daily
  WHERE rate_plan_id = :rate_plan_id
    AND stay_date BETWEEN :from AND :to;
 
--- Разворачиваем и вставляем (наличие берём из pool_availability,
+-- Разворачиваем и вставляем (наличие берём из room_availability,
 -- обязательные per-night extras прибавляем к цене в PHP или подзапросом)
 INSERT INTO search_daily
   (hotel_id, city_id, country_id, room_type_id, rate_plan_id, board_type_id,
    occupancy_id, adults, children, stay_date, price, currency, available,
-   min_stay, max_stay, cta, ctd, closed, min_advance, max_advance, channel_mask)
+   min_stay, max_stay, cta, ctd, closed, min_advance, max_advance,
+   channel_mask, visibility, access_group_id)
 SELECT
    rp.hotel_id, h.city_id, h.country_id, rp.room_type_id, rp.id, rp.board_type_id,
    o.id, o.adults, o.children, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
-   GREATEST(LEAST(CAST(av.allotment AS SIGNED), pool.physical_units)
+   GREATEST(LEAST(CAST(av.allotment AS SIGNED), rt.total_rooms)
             - av.booked - av.blocked, 0) AS available,
    IFNULL(rs.min_stay,1), IFNULL(rs.max_stay,0),
    IFNULL(rs.closed_to_arrival,0), IFNULL(rs.closed_to_departure,0),
    IFNULL(rs.stop_sell,0), IFNULL(rs.min_advance_days,0), IFNULL(rs.max_advance_days,0),
-   rp.channel_mask
+   rp.channel_mask,
+   IF(rp.visibility='private',1,0), rp.access_group_id
 FROM calendar cal
 JOIN rate_plans rp        ON rp.id = :rate_plan_id AND rp.active = 1
 JOIN hotels h             ON h.id = rp.hotel_id
 JOIN room_types rt        ON rt.id = rp.room_type_id
-JOIN inventory_pools pool ON pool.id = rt.pool_id          -- физический пул категории
 JOIN occupancy_options o  ON o.room_type_id = rp.room_type_id
 JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
                         AND pr.occupancy_id = o.id
@@ -52,8 +53,8 @@ JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
 LEFT JOIN rate_restrictions rs ON rs.rate_plan_id = rp.id
                         AND cal.d BETWEEN rs.date_from AND rs.date_to
                         AND (rs.dow_mask & (1 << WEEKDAY(cal.d)))
--- наличие берётся из ПУЛА -> общий счётчик для всех тарифов всех категорий пула
-LEFT JOIN pool_availability av ON av.pool_id = rt.pool_id
+-- наличие на КАТЕГОРИЮ -> общий счётчик для всех тарифов room_type
+LEFT JOIN room_availability av ON av.room_type_id = rp.room_type_id
                         AND av.stay_date = cal.d
 LEFT JOIN (
      -- сумма обязательных per-night extras на тариф
@@ -78,9 +79,12 @@ WHERE cal.d BETWEEN :from AND :to;
 --    :checkout — дата выезда  (ночей = DATEDIFF(:checkout,:checkin) = :nights)
 --    :occ      — occupancy_id, разрешённый из (adults, children)
 --    :rooms    — сколько номеров нужно (обычно 1)
---    :channel  — бит канала (напр. 1)
+--    :channel  — бит канала (напр. 1 = web B2C, 2 = b2b, ...)
 --    :hotels   — список hotel_id (или используйте city_id вариант)
 --    :today    — текущая дата (для окон бронирования)
+--    :groups   — набор access_group_id, доступных этому зрителю
+--                (из логина аккаунта + введённого negotiated-кода);
+--                для анонима/публичного поиска = пустой -> только public
 --
 --  Идея: берём ВСЕ ночи диапазона [checkin, checkout) одним range-scan,
 --  группируем по тарифу; тариф проходит только если:
@@ -117,7 +121,9 @@ FROM (
       AND sd.hotel_id IN ( /* :hotels */ )
       AND sd.closed = 0
       AND sd.available >= :rooms
-      AND (sd.channel_mask & :channel)
+      AND (sd.channel_mask & :channel)                       -- ось 1: канал
+      AND (sd.access_group_id = 0                            -- ось 2: публичный
+           OR sd.access_group_id IN ( /* :groups */ ))       --   или доступный зрителю
     GROUP BY sd.hotel_id, sd.rate_plan_id
     HAVING nights = :nights
        AND cta_block = 0
@@ -157,11 +163,10 @@ LIMIT 300;   -- список кандидатов -> в запрос (B)
 
 
 -- ---------------------------------------------------------------------
---  D. БРОНИРОВАНИЕ — атомарный декремент ОБЩЕГО пула
---     Ключевой момент общего inventory pool: при подтверждении брони
---     ЛЮБОГО тарифа ЛЮБОЙ категории пула списываем номера с ОДНОГО
---     счётчика pool_availability. Это защищает от овербукинга, когда
---     4 тарифа Deluxe (RO/BB × Flex/NRF) делят одни 3 физических номера.
+--  D. БРОНИРОВАНИЕ — атомарный декремент наличия КАТЕГОРИИ
+--     При подтверждении брони ЛЮБОГО тарифа категории списываем номера с
+--     ОДНОГО счётчика room_availability. Это защищает от овербукинга,
+--     когда 4 тарифа Deluxe (RO/BB × Flex/NRF) делят одни 3 номера.
 --
 --     Делать в ОДНОЙ транзакции по всем ночам проживания. Условие
 --     available >= :rooms проверяется атомарно в самом UPDATE:
@@ -170,19 +175,19 @@ LIMIT 300;   -- список кандидатов -> в запрос (B)
 START TRANSACTION;
 
 -- на каждую ночь [checkin, checkout): списать, только если хватает
-UPDATE pool_availability
+UPDATE room_availability
    SET booked = booked + :rooms,
        updated_at = NOW()
- WHERE pool_id = :pool_id
+ WHERE room_type_id = :room_type_id
    AND stay_date = :night
-   AND (LEAST(allotment, (SELECT physical_units FROM inventory_pools WHERE id = :pool_id))
+   AND (LEAST(allotment, (SELECT total_rooms FROM room_types WHERE id = :room_type_id))
         - booked - blocked) >= :rooms;
 -- если ROW_COUNT() = 0 хотя бы на одну ночь -> ROLLBACK (номеров не хватило).
 
 COMMIT;
 
 -- После успешной брони:
---   * поставить cache_rebuild_queue scope='pool' на затронутый пул/даты
---     (пересоберёт available во ВСЕХ тарифах всех категорий пула);
+--   * поставить cache_rebuild_queue scope='room_type' на категорию/даты
+--     (пересоберёт available во ВСЕХ тарифах категории);
 --   * при двусторонней интеграции — положить обновление наличия в ari_outbox
 --     для отправки в PMS/Channel Manager (защита от овербукинга на их стороне).

@@ -11,12 +11,16 @@ INSERT INTO board_types (code, name) VALUES
   ('FB','Full Board'),
   ('AI','All Inclusive');
 
--- Каналы продаж (bit = степень двойки; используется в channel_mask)
+-- Каналы продаж (bit = степень двойки; используется в channel_mask).
+-- Это «ось 1» видимости — широкая аудитория дистрибуции. «Ось 2»
+-- (public/private + access_group) гейтит приватные/negotiated тарифы.
 INSERT INTO sales_channels (bit, code, name) VALUES
   (1,  'web',    'Website B2C'),
   (2,  'b2b',    'B2B / Agents'),
-  (4,  'mobile', 'Mobile app'),
-  (8,  'api',    'API partners');
+  (4,  'b2b2c',  'B2B2C / White-label'),
+  (8,  'corp',   'Corporate'),
+  (16, 'mobile', 'Mobile app'),
+  (32, 'api',    'API partners');
 
 -- ---------------------------------------------------------------------
 --  Вспомогательный календарь дат — нужен для разворота периодов в

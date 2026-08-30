@@ -8,7 +8,7 @@ MySQL 5.6/5.7 (InnoDB, utf8mb4) + PHP как слой бизнес-логики.
 
 | Слой | Таблицы | Форма хранения | Кто пишет | Кто читает |
 |------|---------|----------------|-----------|------------|
-| **1. Конфигурация** (source of truth) | `rate_prices`, `rate_restrictions`, `allotment_contracts`, `pool_availability`, политики, extras | Компактно — **периодами** (`date_from`/`date_to` + `dow_mask`) | Менеджеры / PMS / загрузка | Пересборщик кэша |
+| **1. Конфигурация** (source of truth) | `rate_prices`, `rate_restrictions`, `allotment_contracts`, `room_availability`, тарифы/доступы, политики, extras | Компактно — **периодами** (`date_from`/`date_to` + `dow_mask`) | Менеджеры / PMS / загрузка | Пересборщик кэша |
 | **2. Поисковый кэш** | `search_daily` (+ `search_best_nightly`) | Денормализованно — **посуточно**, одна строка = тариф × размещение × дата | Пересборщик (PHP/cron) | **Горячий поиск** |
 
 Конфигурация удобна для редактирования и занимает мало места (периоды).
@@ -37,61 +37,81 @@ MySQL 5.6/5.7 (InnoDB, utf8mb4) + PHP как слой бизнес-логики.
 ```
 countries → cities → hotels
                         │
-                        ├── inventory_pools ──────► pool_availability   (посуточное наличие ПУЛА)
-                        │        ▲     ▲            allotment_contracts (контракт на пул)
-                        │        │     │
-                        │   room_types (1..N категорий на один физ. пул)
-                        │        │
-                        │     rate_plans (1..N тарифов на категорию)
-                        │            ├── board_types (питание)
-                        │            ├── occupancy_options (2взр, 2взр+1реб …)
-                        │            ├── rate_prices        (цена: тариф×размещение×период)
-                        │            ├── rate_restrictions  (min/max stay, CTA/CTD, stop-sell, окна)
-                        │            ├── cancellation_policies → cancellation_rules
-                        │            └── rate_plan_extras → extras
+                        └── room_types ──────► room_availability   (посуточное наличие категории)
+                             │                 allotment_contracts (контракт на категорию)
+                             │
+                           rate_plans (1..N тарифов на категорию)
+                                ├── board_types (питание)
+                                ├── occupancy_options (2взр, 2взр+1реб …)
+                                ├── rate_prices        (цена: тариф×размещение×период)
+                                ├── rate_restrictions  (min/max stay, CTA/CTD, stop-sell, окна)
+                                ├── cancellation_policies → cancellation_rules
+                                ├── rate_plan_extras → extras
+                                ├── channel_mask ──► sales_channels           (ось 1: аудитория)
+                                └── visibility + access_group_id ──► access_groups   (ось 2: гейт)
+                                                       ▲                  ▲
+                                     account_access_groups          access_codes
+                                            ▲                              (negotiated код)
+                                        accounts (B2B / TO / Corp)
 ```
 
-- **Физический пул (`inventory_pools`)** = «сколько реально номеров есть».
-  Наличие и аллотменты ключуются на **пул**, поэтому все тарифы всех
-  категорий, сидящих на пуле, делят **один** счётчик. См. §3a.
-- **Категория (`room_types`)** — единица *мерчендайзинга*; ссылается на пул
-  (`pool_id`). Много категорий → один пул (или 1:1 в простом случае).
+- **Категория (`room_types`)** = единица инвентаря И мерчендайзинга (как у
+  Booking.com/Expedia). Наличие и аллотмент ключуются на неё; все тарифы
+  категории делят её счётчик номеров.
 - **Тариф (`rate_plans`)** = «как продаётся категория»: питание,
-  отменяемость, политика отмены, валюта, битовая маска каналов.
+  отменяемость, политика отмены, валюта + **две оси видимости** (см. §3a).
 - **Размещение (`occupancy_options`)** перечисляет продаваемые комбинации
   гостей `(adults, children)`. Цена задаётся на тариф × размещение, поэтому
   запрос под конкретное число гостей резолвится в один `occupancy_id`.
-- **Наличие** считается посуточно на пуле как
-  `LEAST(allotment, physical_units) − booked − blocked`. Бронь любого тарифа
-  декрементит `pool_availability` (атомарно) и триггерит пересборку кэша по
-  всем тарифам пула.
+- **Наличие** считается посуточно на категории как
+  `LEAST(allotment, total_rooms) − booked − blocked`. Бронь любого тарифа
+  декрементит `room_availability` (атомарно, § запрос D) и триггерит
+  пересборку кэша по всем тарифам категории.
 - **Ограничения** — CTA/CTD на дату заезда/выезда, min/max stay, stop-sell,
   окна бронирования (min/max advance), release_days для аллотмента.
 
-### 3a. Общий физический пул (inventory pool)
+> **Почему без inventory_pool.** Unit.Travel — OTA-позиция: владелец
+> инвентаря — отель (наш Extranet) или его CM/PMS, и пулинг общего физфонда
+> между *разными* категориями решается выше нас. Поэтому носитель наличия —
+> `room_type`. Если реально общий физфонд под 2+ категориями внутри нашего
+> Extranet когда-нибудь понадобится — добавляется неломающе (`room_types.
+> shared_bucket_id`), без переделки схемы.
 
-Разные тарифы одной категории — и даже разные категории (напр. «Deluxe» и
-«Deluxe Sea View» — одни и те же комнаты) — не должны хранить независимые
-аллотменты: это **одни и те же физические номера**.
+### 3a. Каналы и public / private тарифы
 
-Пример: Deluxe физически = 3 номера, 4 тарифа
-`101 RO/Flex, 102 BB/Flex, 103 RO/NRF, 104 BB/NRF`. Все четыре ссылаются на
-одну категорию, категория — на один `inventory_pool` с `physical_units = 3`.
-Наличие лежит в `pool_availability` **один раз на пул**, а не по три штуки на
-каждый тариф.
+Multi-channel продажи (B2C web, B2B, B2B2C, Corp, Mobile) моделируются
+**двумя ортогональными осями** видимости на тарифе:
 
-- **Продажа любого тарифа списывает общий счётчик** — `booked` в
-  `pool_availability` для пула. Продали `101` → у `102/103/104` доступность
-  тоже упала. Овербукинг невозможен (§ запрос D — атомарный `UPDATE ... WHERE
-  available >= :rooms` в транзакции).
-- **CM/PMS** обычно моделируют инвентарь как `Room 1:N RatePlans` — наш пул
-  ровно это. ARI-обновление наличия приходит на «room» → `external_mappings`
-  → `pool_id`.
-- **Кэш** денормализует `available` в каждую строку тарифа, но источник —
-  один пул: пересборка по `scope='pool'` разворачивает изменение во все
-  тарифы всех категорий пула, значения остаются согласованными.
-- **Простой случай** (у категории свой отдельный фонд) = один пул на один
-  room_type — та же схема без накладных расходов.
+**Ось 1 — канал (`channel_mask`)** — широкая аудитория дистрибуции. Битовая
+маска каналов из `sales_channels`. Тариф может быть виден в нескольких
+каналах сразу. Поиск фильтрует `channel_mask & :channel`.
+
+**Ось 2 — публичность (`visibility` + `access_group_id`)** — узкий гейт:
+- `public` (`access_group_id = 0`) — виден всем в своих каналах.
+- `private` — виден только тем, кто входит в `access_group` тарифа. В группу
+  ведут два пути:
+  - **аккаунт** (B2B-агент / туроператор / корпоративный клиент) —
+    `accounts → account_access_groups → access_group`;
+  - **negotiated / промо-код** — `access_codes.code → access_group` (гость
+    или агент вводит код доступа).
+
+Пример: `Corporate ACME` — приватный тариф в канале `corp`, привязан к
+`access_group = CORP_ACME`. Его видят только аккаунты ACME (через членство)
+или тот, кто ввёл negotiated-код контракта ACME.
+
+**Резолв зрителя (PHP):** логин аккаунта → набор `access_group_id` (из
+`account_access_groups`) + группа введённого кода (из `access_codes`) →
+множество `:groups`. Публичный/анонимный поиск → `:groups` пуст.
+
+**Фильтр в поиске (одна колонка, index-friendly):**
+```sql
+AND (channel_mask & :channel)                         -- ось 1
+AND (access_group_id = 0 OR access_group_id IN (:groups))  -- ось 2
+```
+`access_group_id` денормализован в `search_daily`, поэтому приватность не
+добавляет JOIN на горячем пути. Tier-3 предагрегат `search_best_nightly`
+строится только по публичным тарифам (иначе утекут приватные цены);
+приватный поиск идёт напрямую по `search_daily`.
 
 ## 4. Слой 2 — `search_daily`
 
@@ -100,7 +120,7 @@ countries → cities → hotels
 - **Цена** — уже в валюте отеля, включает обязательные per-night extras.
 - **Наличие** — `available` на конкретную ночь.
 - **Ограничения** — разрешённые на дату: `min_stay/max_stay/cta/ctd/closed/min_advance/max_advance`.
-- **Каналы** — `channel_mask` (битовая маска).
+- **Видимость** — `channel_mask` (ось 1) + `visibility`/`access_group_id` (ось 2).
 - **Гео** — `city_id/country_id` для поиска по городу/стране без JOIN.
 
 ## 5. Горячий поиск (один запрос)
@@ -119,7 +139,8 @@ FROM (
     AND stay_date >= :checkin AND stay_date < :checkout
     AND hotel_id IN (…)
     AND closed = 0 AND available >= :rooms
-    AND (channel_mask & :channel)
+    AND (channel_mask & :channel)                         -- канал
+    AND (access_group_id = 0 OR access_group_id IN (:groups))  -- public/private
   GROUP BY hotel_id, rate_plan_id
   HAVING nights = :nights AND cta_block=0 AND minstay_block=0 /* … */
 ) t
@@ -140,12 +161,15 @@ GROUP BY hotel_id;
 
 1. **Резолв размещения**: `(adults, children[, ages])` → `occupancy_id`
    (с учётом правил размещения детей/доп. мест).
-2. **Пересборка кэша**: при изменении цены/правила/аллотмента развернуть
-   затронутые периоды в посуточные строки `search_daily` (batch INSERT).
-   Инкрементально — только затронутый тариф × диапазон дат.
-3. **Оформление**: опциональные extras, конвертация валют, налоги/сборы,
+2. **Резолв доступа**: канал зрителя → бит `channel_mask`; логин аккаунта +
+   введённый negotiated-код → множество `:groups` (`account_access_groups` +
+   `access_codes`). Эти два параметра идут в фильтр поиска (§3a).
+3. **Пересборка кэша**: при изменении цены/правила/аллотмента/доступа
+   развернуть затронутые периоды в посуточные строки `search_daily`
+   (batch INSERT). Инкрементально — только затронутый тариф × диапазон дат.
+4. **Оформление**: опциональные extras, конвертация валют, налоги/сборы,
    расчёт штрафа отмены по `cancellation_rules` — вне горячего пути.
-4. **Конвертация валют**: хранить в валюте отеля; для мультивалютного поиска
+5. **Конвертация валют**: хранить в валюте отеля; для мультивалютного поиска
    либо конвертировать курс в PHP после агрегации, либо держать
    предрасчитанную колонку `price_eur` в кэше.
 
@@ -181,7 +205,7 @@ cache_rebuild_queue ──► воркер ──► search_daily (Слой 2)
 | `sync_log` | Наблюдаемость: что, откуда, сколько строк, ошибки |
 
 Плюс на конфиг-таблицах (`rate_prices`, `rate_restrictions`,
-`allotment_contracts`, `pool_availability`) добавлены колонки происхождения:
+`allotment_contracts`, `room_availability`) добавлены колонки происхождения:
 `source`/`managed_by`, `connection_id`, `external_rev`, `updated_at`.
 
 ### Принципы, важные для инвенторной системы
@@ -196,7 +220,7 @@ cache_rebuild_queue ──► воркер ──► search_daily (Слой 2)
   Слой 1; поиск читает исключительно `search_daily`. Пик входящих обновлений
   не тормозит поиск, а согласованность даёт пересборка кэша через очередь.
 - **Разграничение владения.** `provider_connections.manages_*` и
-  `pool_availability.managed_by` определяют, кто «владеет» ценой/наличием
+  `room_availability.managed_by` определяют, кто «владеет» ценой/наличием
   (например, наличием управляет CM в режиме free-sell, а ручная правка
   ставит `managed_by='internal'` и игнорирует последующие пуши — политика
   разрешения конфликтов реализуется в PHP).

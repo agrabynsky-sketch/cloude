@@ -63,42 +63,28 @@ CREATE TABLE hotels (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 2. ФИЗИЧЕСКИЙ ПУЛ НАЛИЧИЯ (inventory pool), НОМЕРА и типы питания
+-- 2. НОМЕРА (категории) и типы питания
 -- ---------------------------------------------------------------------
 
--- Пул физической доступности = «сколько реальных номеров есть».
--- К одному пулу может быть привязано НЕСКОЛЬКО room_types (напр. «Deluxe»
--- и «Deluxe Sea View» — одни и те же физические номера), а к каждому
--- room_type — несколько тарифов. Аллотмент и наличие ключуются на ПУЛ,
--- поэтому все тарифы всех этих категорий делят один счётчик номеров.
--- Простой случай = один пул на один room_type (1:1).
-CREATE TABLE inventory_pools (
-  id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  hotel_id       INT UNSIGNED NOT NULL,
-  code           VARCHAR(32)  NOT NULL,
-  name           VARCHAR(160) NOT NULL,
-  physical_units SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- жёсткий физический потолок
-  active         TINYINT(1) NOT NULL DEFAULT 1,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_pool_code (hotel_id, code),
-  KEY idx_pool_hotel (hotel_id, active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
+-- room_type = единица инвентаря И мерчендайзинга (как у Booking.com/Expedia).
+-- Наличие и аллотмент ключуются на room_type; все тарифы категории делят
+-- её счётчик номеров. Пулинг общего физфонда между РАЗНЫМИ категориями
+-- (если вдруг понадобится) остаётся на стороне отеля/CM/PMS, а при
+-- необходимости добавляется неломающе полем room_types.shared_bucket_id.
 CREATE TABLE room_types (
   id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
   hotel_id       INT UNSIGNED NOT NULL,
-  pool_id        INT UNSIGNED NOT NULL,                 -- на каком физ. пуле «сидит» категория
   code           VARCHAR(32)  NOT NULL,
   name           VARCHAR(160) NOT NULL,
   base_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- «стандартное» размещение
   max_occupancy  TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- всего гостей (взр.+дети)
   max_adults     TINYINT UNSIGNED NOT NULL DEFAULT 2,
   max_children   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  total_rooms    SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- физический фонд (потолок аллотмента)
   active         TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
   UNIQUE KEY uq_room_code (hotel_id, code),
-  KEY idx_room_hotel (hotel_id, active),
-  KEY idx_room_pool (pool_id)
+  KEY idx_room_hotel (hotel_id, active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Глобальный справочник питания: RO/BB/HB/FB/AI и т.п.
@@ -113,7 +99,12 @@ CREATE TABLE board_types (
 -- ---------------------------------------------------------------------
 -- 3. ТАРИФНЫЕ ПЛАНЫ (rate plans)
 --    Тариф = «как продаётся эта категория»: питание, отменяемость,
---    политика отмены, канал, валюта.
+--    политика отмены, канал, валюта, публичность/приватность.
+--    Две ОРТОГОНАЛЬНЫЕ оси видимости:
+--      * channel_mask   — широкая аудитория (web / b2b / b2b2c / corp / mobile)
+--      * visibility + access_group_id — узкий гейт приватного/negotiated
+--        тарифа: 'public' виден всем в своих каналах; 'private' — только
+--        аккаунтам/по коду доступа, входящим в access_group.
 -- ---------------------------------------------------------------------
 
 CREATE TABLE rate_plans (
@@ -126,16 +117,21 @@ CREATE TABLE rate_plans (
   currency             CHAR(3)      NOT NULL DEFAULT 'EUR',
   is_refundable        TINYINT(1)   NOT NULL DEFAULT 1,
   cancellation_policy_id INT UNSIGNED NULL,
-  channel_mask         INT UNSIGNED NOT NULL DEFAULT 1,  -- битовая маска каналов продаж
+  -- ось 1: каналы дистрибуции (битовая маска sales_channels) ---------
+  channel_mask         INT UNSIGNED NOT NULL DEFAULT 1,
+  -- ось 2: публичность/приватность ----------------------------------
+  visibility           ENUM('public','private') NOT NULL DEFAULT 'public',
+  access_group_id      INT UNSIGNED NOT NULL DEFAULT 0,  -- 0 = публичный; иначе гейт доступа
   priority             SMALLINT NOT NULL DEFAULT 0,
   active               TINYINT(1)   NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
   UNIQUE KEY uq_rp_code (hotel_id, code),
   KEY idx_rp_room (room_type_id, active),
-  KEY idx_rp_hotel (hotel_id, active)
+  KEY idx_rp_hotel (hotel_id, active),
+  KEY idx_rp_access (access_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Каналы продаж (web, b2b, mobile, api-partner...) — соответствуют битам channel_mask
+-- Каналы продаж (web, b2b, b2b2c, corp, mobile, api...) — биты channel_mask
 CREATE TABLE sales_channels (
   id    TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
   bit   INT UNSIGNED NOT NULL,          -- 1,2,4,8...
@@ -143,6 +139,55 @@ CREATE TABLE sales_channels (
   name  VARCHAR(80)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_channel_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------
+-- 3a. ДОСТУП К ПРИВАТНЫМ / NEGOTIATED ТАРИФАМ
+--     access_group — именованный «гейт» приватного тарифа (контракт).
+--     Тариф ссылается на ОДНУ группу (rate_plans.access_group_id); а
+--     аккаунты и коды доступа — МНОЖЕСТВО членов этой группы. Так поиск
+--     фильтруется одной колонкой access_group_id (см. 02/03).
+-- ---------------------------------------------------------------------
+
+-- B2B/Corp-клиенты: агентства, туроператоры, корпоративные аккаунты.
+CREATE TABLE accounts (
+  id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  type          ENUM('agency','tour_operator','corporate','affiliate') NOT NULL,
+  code          VARCHAR(40)  NOT NULL,
+  name          VARCHAR(200) NOT NULL,
+  status        ENUM('active','suspended') NOT NULL DEFAULT 'active',
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_account_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Именованный гейт доступа (= контракт/сегмент приватных тарифов).
+CREATE TABLE access_groups (
+  id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  code          VARCHAR(40)  NOT NULL,   -- 'CORP_ACME','TO_CORAL','PROMO_WINTER'
+  name          VARCHAR(160) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_accessgroup_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Членство аккаунта в группе(ах): логин аккаунта -> набор access_group_id.
+CREATE TABLE account_access_groups (
+  account_id      INT UNSIGNED NOT NULL,
+  access_group_id INT UNSIGNED NOT NULL,
+  PRIMARY KEY (account_id, access_group_id),
+  KEY idx_aag_group (access_group_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Negotiated / промо-коды доступа: ввод кода -> access_group_id.
+CREATE TABLE access_codes (
+  id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  code            VARCHAR(60) NOT NULL,          -- negotiated code, вводится гостем/агентом
+  access_group_id INT UNSIGNED NOT NULL,
+  valid_from      DATE NULL,
+  valid_to        DATE NULL,
+  active          TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_access_code (code),
+  KEY idx_code_group (access_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -214,22 +259,21 @@ CREATE TABLE rate_restrictions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ (на уровне ФИЗИЧЕСКОГО ПУЛА)
+-- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ (на уровне КАТЕГОРИИ room_type)
 --    Контракт на количество номеров — периодами. Наличие считается
 --    посуточно как allotment - booked - blocked. Хранится в отдельной
 --    посуточной таблице, т.к. меняется при каждом бронировании.
---    КЛЮЧ — pool_id: все room_types и все их тарифы, сидящие на пуле,
---    делят ОДИН счётчик физических номеров (см. раздел 2).
+--    Все тарифы категории делят ОДИН счётчик наличия room_type.
 -- ---------------------------------------------------------------------
 
--- Контракт аллотмента (периодами) — на физический пул
+-- Контракт аллотмента (периодами) — на категорию
 CREATE TABLE allotment_contracts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  pool_id       INT UNSIGNED NOT NULL,   -- аллотмент общий на физический пул
+  room_type_id  INT UNSIGNED NOT NULL,   -- аллотмент общий на категорию
   date_from     DATE NOT NULL,
   date_to       DATE NOT NULL,
   dow_mask      TINYINT UNSIGNED NOT NULL DEFAULT 127,
-  units         SMALLINT UNSIGNED NOT NULL,  -- продаваемых номеров (<= physical_units)
+  units         SMALLINT UNSIGNED NOT NULL,  -- продаваемых номеров (<= total_rooms)
   release_days  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   -- происхождение записи --------------------------------------------
   source        ENUM('manual','pms','channel_manager','import') NOT NULL DEFAULT 'manual',
@@ -237,26 +281,26 @@ CREATE TABLE allotment_contracts (
   external_rev  BIGINT UNSIGNED NULL,
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_allot_lookup (pool_id, date_from, date_to),
+  KEY idx_allot_lookup (room_type_id, date_from, date_to),
   KEY idx_allot_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Посуточное фактическое наличие ПУЛА (пересобирается/декрементится).
--- available = LEAST(allotment, physical_units) - booked - blocked
--- Это ЕДИНСТВЕННЫЙ авторитетный счётчик; при брони любого тарифа любой
--- категории пула инкрементится booked именно здесь (атомарно, в транзакции).
-CREATE TABLE pool_availability (
-  pool_id       INT UNSIGNED NOT NULL,
+-- Посуточное фактическое наличие КАТЕГОРИИ (пересобирается/декрементится).
+-- available = LEAST(allotment, total_rooms) - booked - blocked
+-- Единственный авторитетный счётчик; бронь любого тарифа категории
+-- инкрементит booked именно здесь (атомарно, в транзакции).
+CREATE TABLE room_availability (
+  room_type_id  INT UNSIGNED NOT NULL,
   stay_date     DATE NOT NULL,
   allotment     SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- контракт (может присылать CM/PMS)
-  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- подтверждённые брони по ВСЕМ тарифам пула
+  booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- подтверждённые брони по всем тарифам категории
   blocked       SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- ручной stop/овербукинг-буфер
   -- признак «наличием управляет внешняя система» (free-sell/managed) -
   managed_by    ENUM('internal','pms','channel_manager') NOT NULL DEFAULT 'internal',
   connection_id INT UNSIGNED NULL,
   external_rev  BIGINT UNSIGNED NULL,   -- seq/timestamp источника (last-write-wins)
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (pool_id, stay_date)
+  PRIMARY KEY (room_type_id, stay_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------

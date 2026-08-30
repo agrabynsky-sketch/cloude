@@ -46,8 +46,10 @@ CREATE TABLE search_daily (
   min_advance    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   max_advance    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
 
-  -- каналы продаж (битовая маска) ----------------------------------
-  channel_mask   INT UNSIGNED     NOT NULL DEFAULT 1,
+  -- видимость: каналы + приватность --------------------------------
+  channel_mask   INT UNSIGNED     NOT NULL DEFAULT 1,     -- ось 1: аудитория
+  visibility     TINYINT UNSIGNED NOT NULL DEFAULT 0,     -- 0=public, 1=private
+  access_group_id INT UNSIGNED    NOT NULL DEFAULT 0,     -- ось 2: гейт (0=public)
 
   PRIMARY KEY (rate_plan_id, occupancy_id, stay_date),
 
@@ -55,12 +57,12 @@ CREATE TABLE search_daily (
   -- Порядок колонок: сначала равенство (occupancy_id), затем диапазон
   -- по дате, затем фильтр отелей и цена — чтобы range-scan был плотным,
   -- а движок мог отдавать данные из индекса (index-only).
-  KEY idx_search (occupancy_id, stay_date, hotel_id, closed, price,
-                  available, rate_plan_id, min_stay, max_stay,
+  KEY idx_search (occupancy_id, stay_date, hotel_id, closed, access_group_id,
+                  price, available, rate_plan_id, min_stay, max_stay,
                   cta, ctd, channel_mask),
 
   -- поиск по городу
-  KEY idx_search_city (occupancy_id, stay_date, city_id, closed, price),
+  KEY idx_search_city (occupancy_id, stay_date, city_id, closed, access_group_id, price),
 
   -- обслуживание/чистка по датам
   KEY idx_stay_date (stay_date)
@@ -95,6 +97,9 @@ PARTITION BY RANGE COLUMNS(stay_date) (
 --  точный расчёт с LOS-правилами добивается только по кандидатам.
 --  ВНИМАНИЕ: этого слоя недостаточно для финальной цены, т.к. min/max
 --  stay и CTA/CTD проверяются только по search_daily.
+--  Строится ТОЛЬКО по публичным тарифам (visibility=public), иначе
+--  утекут приватные цены. Приватный поиск идёт напрямую по search_daily
+--  с фильтром access_group_id.
 -- =====================================================================
 
 CREATE TABLE search_best_nightly (
