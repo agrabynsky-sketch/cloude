@@ -3,6 +3,15 @@
 --  Файл 00: Справочные данные и вспомогательный календарь
 -- =====================================================================
 
+-- Виды из окна (room.room_view)
+INSERT INTO room_views (id, code, name) VALUES
+  (0, 'unknown',  'Unknown'),
+  (1, 'city',     'City view'),
+  (2, 'garden',   'Garden view'),
+  (3, 'sea',      'Sea view'),
+  (4, 'lake',     'Lake view'),
+  (5, 'mountain', 'Mountain view');   -- в тз было дублем 'lake'; уточнить
+
 -- Типы питания
 INSERT INTO board_types (code, name) VALUES
   ('RO','Room Only'),

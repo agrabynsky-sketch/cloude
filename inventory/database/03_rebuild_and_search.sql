@@ -25,12 +25,12 @@ DELETE FROM search_daily
 -- Разворачиваем и вставляем (наличие берём из room_availability,
 -- обязательные per-night extras прибавляем к цене в PHP или подзапросом)
 INSERT INTO search_daily
-  (hotel_id, city_id, country_id, room_type_id, rate_plan_id, board_type_id,
+  (hotel_id, city_id, country_id, room_id, rate_plan_id, board_type_id,
    occupancy_id, adults, children, stay_date, price, currency, available,
    min_stay, max_stay, cta, ctd, closed, min_advance, max_advance,
    channel_mask, visibility, access_group_id)
 SELECT
-   rp.hotel_id, h.city_id, h.country_id, rp.room_type_id, rp.id, rp.board_type_id,
+   rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
    o.id, o.adults, o.children, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
@@ -44,8 +44,8 @@ SELECT
 FROM calendar cal
 JOIN rate_plans rp        ON rp.id = :rate_plan_id AND rp.active = 1
 JOIN hotels h             ON h.id = rp.hotel_id
-JOIN room_types rt        ON rt.id = rp.room_type_id
-JOIN occupancy_options o  ON o.room_type_id = rp.room_type_id
+JOIN room rt        ON rt.id = rp.room_id
+JOIN occupancy_options o  ON o.room_id = rp.room_id
 JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
                         AND pr.occupancy_id = o.id
                         AND cal.d BETWEEN pr.date_from AND pr.date_to
@@ -53,8 +53,8 @@ JOIN rate_prices pr       ON pr.rate_plan_id = rp.id
 LEFT JOIN rate_restrictions rs ON rs.rate_plan_id = rp.id
                         AND cal.d BETWEEN rs.date_from AND rs.date_to
                         AND (rs.dow_mask & (1 << WEEKDAY(cal.d)))
--- наличие на КАТЕГОРИЮ -> общий счётчик для всех тарифов room_type
-LEFT JOIN room_availability av ON av.room_type_id = rp.room_type_id
+-- наличие на КАТЕГОРИЮ -> общий счётчик для всех тарифов room
+LEFT JOIN room_availability av ON av.room_id = rp.room_id
                         AND av.stay_date = cal.d
 LEFT JOIN (
      -- сумма обязательных per-night extras на тариф
@@ -69,6 +69,20 @@ WHERE cal.d BETWEEN :from AND :to;
 -- Примечание: при пересечении периодов цен выбор нужной строки (по
 -- приоритету/самому узкому периоду) делает PHP перед вставкой, либо
 -- периоды хранятся непересекающимися по контракту загрузки.
+--
+-- PRICING_MODEL и ПРОИЗВОДНЫЕ ТАРИФЫ разрешаются PHP на этапе пересборки,
+-- поэтому в search_daily всегда лежит УЖЕ финальная цена за ночь:
+--   * pricing_model=1 (per room)      -> одна цена на все occupancy_id
+--     (можно продублировать в строки размещений или искать по базовому);
+--   * pricing_model=2 (occupancy)     -> цена берётся из rate_prices по occupancy_id.
+--   * derive_type!=0                  -> цена = f(цена родителя, derive_value):
+--       1 parent+fixed, 2 parent-fixed (derive_value в minor units),
+--       3 parent+percent, 4 parent-percent (basis points: 1000 = 10.00%),
+--       5 same as parent.
+--     Пересборка ИДЁТ ОТ КОРНЯ: сначала родитель, затем производные.
+--     Изменение родителя ставит в cache_rebuild_queue и всех потомков
+--     (обход по rate_plans.parent_rate_plan_id, индекс idx_rp_parent).
+--     Циклы наследования запрещены на уровне валидации в PHP.
 
 
 -- ---------------------------------------------------------------------
@@ -200,16 +214,16 @@ START TRANSACTION;
 UPDATE room_availability
    SET booked = booked + :rooms,
        updated_at = NOW()
- WHERE room_type_id = :room_type_id
+ WHERE room_id = :room_id
    AND stay_date = :night
-   AND (LEAST(allotment, (SELECT total_rooms FROM room_types WHERE id = :room_type_id))
+   AND (LEAST(allotment, (SELECT total_rooms FROM room WHERE id = :room_id))
         - booked - blocked) >= :rooms;
 -- если ROW_COUNT() = 0 хотя бы на одну ночь -> ROLLBACK (номеров не хватило).
 
 COMMIT;
 
 -- После успешной брони:
---   * поставить cache_rebuild_queue scope='room_type' на категорию/даты
+--   * поставить cache_rebuild_queue scope='room' на категорию/даты
 --     (пересоберёт available во ВСЕХ тарифах категории);
 --   * при двусторонней интеграции — положить обновление наличия в ari_outbox
 --     для отправки в PMS/Channel Manager (защита от овербукинга на их стороне).

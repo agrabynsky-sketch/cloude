@@ -38,7 +38,7 @@ MySQL 5.6/5.7 (InnoDB, utf8mb4) + PHP как слой бизнес-логики.
 ```
 countries → cities → hotels
                         │
-                        └── room_types ──────► room_availability   (посуточное наличие категории)
+                        └── room ──────► room_availability   (посуточное наличие категории)
                              │                 allotment_contracts (контракт на категорию)
                              │
                            rate_plans (1..N тарифов на категорию)
@@ -56,11 +56,16 @@ countries → cities → hotels
                                         accounts (B2B / TO / Corp)
 ```
 
-- **Категория (`room_types`)** = единица инвентаря И мерчендайзинга (как у
-  Booking.com/Expedia). Наличие и аллотмент ключуются на неё; все тарифы
-  категории делят её счётчик номеров.
+- **Категория (`room`)** = единица инвентаря И мерчендайзинга (как у
+  Booking.com/Expedia; бывшая `room_types`). Наличие и аллотмент ключуются
+  на неё; все тарифы категории делят её счётчик номеров. Несёт физические
+  атрибуты: `qty_bedrooms/livingrooms/bathrooms`, `size`, `smoking`,
+  `floor`, `room_view` (справочник `room_views`), и вместимость
+  `base/max_occupancy`, `max_adults/children/infants` +
+  `exclude_infants_occupancy` (не считать младенцев в общей вместимости).
 - **Тариф (`rate_plans`)** = «как продаётся категория»: питание,
-  отменяемость, политика отмены, валюта + **две оси видимости** (см. §3a).
+  отменяемость, политика отмены, валюта + **две оси видимости** (§3a) +
+  **модель цены и наследование** (§3b).
 - **Размещение (`occupancy_options`)** перечисляет продаваемые комбинации
   гостей `(adults, children)`. Цена задаётся на тариф × размещение, поэтому
   запрос под конкретное число гостей резолвится в один `occupancy_id`.
@@ -74,8 +79,8 @@ countries → cities → hotels
 > **Почему без inventory_pool.** Unit.Travel — OTA-позиция: владелец
 > инвентаря — отель (наш Extranet) или его CM/PMS, и пулинг общего физфонда
 > между *разными* категориями решается выше нас. Поэтому носитель наличия —
-> `room_type`. Если реально общий физфонд под 2+ категориями внутри нашего
-> Extranet когда-нибудь понадобится — добавляется неломающе (`room_types.
+> `room`. Если реально общий физфонд под 2+ категориями внутри нашего
+> Extranet когда-нибудь понадобится — добавляется неломающе (`room.
 > shared_bucket_id`), без переделки схемы.
 
 ### 3a. Каналы и public / private тарифы
@@ -111,6 +116,38 @@ AND (access_group_id = 0 OR access_group_id IN (:groups))  -- ось 2
 ```
 `access_group_id` денормализован в `search_daily`, поэтому приватность не
 добавляет JOIN на горячем пути.
+
+### 3b. Модель цены и наследование тарифов
+
+Обе настройки разрешаются PHP **на этапе пересборки кэша**, поэтому в
+`search_daily` всегда лежит уже финальная цена за ночь — горячий поиск про
+них ничего не знает.
+
+**`pricing_model`** — как цена зависит от гостей:
+- `1 = price per room` — цена за номер, размещение не влияет (одна цена на
+  все `occupancy_id`).
+- `2 = occupancy based` — цена берётся из `rate_prices` по `occupancy_id`
+  (дефолт).
+
+**Наследование (derived rates)** — `parent_rate_plan_id` + `derive_type` +
+`derive_value`. Позволяет вести один базовый тариф, а остальные считать от
+него (напр. NRF = Flex − 10%):
+
+| `derive_type` | смысл | `derive_value` |
+|---|---|---|
+| 0 | independent (свой прайс) | — |
+| 1 | parent + fixed | minor units |
+| 2 | parent − fixed | minor units |
+| 3 | parent + percent | basis points (1000 = 10.00%) |
+| 4 | parent − percent | basis points |
+| 5 | same as parent | — |
+
+- `derive_value` в **minor units** (копейки/центы) для fixed и в **basis
+  points** для percent — целочисленно, без ошибок float.
+- **Пересборка идёт от корня**: сначала родитель, затем потомки. Изменение
+  родителя ставит в `cache_rebuild_queue` и всех потомков (обход по
+  `parent_rate_plan_id`, индекс `idx_rp_parent`). Циклы наследования
+  запрещаются валидацией в PHP.
 
 ## 4. Слой 2 — `search_daily`
 
@@ -223,7 +260,7 @@ cache_rebuild_queue ──► воркер ──► search_daily (Слой 2)
 |---------|------|
 | `integration_providers` | Типы систем (SiteMinder, TravelClick, Opera…), протокол, push/pull |
 | `provider_connections` | Экземпляр интеграции отель↔провайдер; **что** ему разрешено менять (rates/avail/restrictions); `credentials_ref` — ссылка на секрет в vault, не сам ключ |
-| `external_mappings` | Наш `room_type_id`/`rate_plan_id` ↔ внешний код провайдера |
+| `external_mappings` | Наш `room_id`/`rate_plan_id` ↔ внешний код провайдера |
 | `ari_inbox` | Идемпотентный журнал входящих сообщений (сырьё + статус) |
 | `ari_outbox` | Исходящие уведомления провайдеру (двусторонняя синхро) с ретраями |
 | `cache_rebuild_queue` | Задачи на пересборку `search_daily` по затронутым диапазонам |

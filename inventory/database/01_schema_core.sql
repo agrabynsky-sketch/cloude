@@ -66,25 +66,48 @@ CREATE TABLE hotels (
 -- 2. НОМЕРА (категории) и типы питания
 -- ---------------------------------------------------------------------
 
--- room_type = единица инвентаря И мерчендайзинга (как у Booking.com/Expedia).
--- Наличие и аллотмент ключуются на room_type; все тарифы категории делят
+-- room = единица инвентаря И мерчендайзинга (как у Booking.com/Expedia).
+-- Наличие и аллотмент ключуются на room; все тарифы категории делят
 -- её счётчик номеров. Пулинг общего физфонда между РАЗНЫМИ категориями
 -- (если вдруг понадобится) остаётся на стороне отеля/CM/PMS, а при
--- необходимости добавляется неломающе полем room_types.shared_bucket_id.
-CREATE TABLE room_types (
+-- необходимости добавляется неломающе полем room.shared_bucket_id.
+CREATE TABLE room (
   id             INT UNSIGNED NOT NULL AUTO_INCREMENT,
   hotel_id       INT UNSIGNED NOT NULL,
   code           VARCHAR(32)  NOT NULL,
   name           VARCHAR(160) NOT NULL,
+  -- базовая вместимость --------------------------------------------
   base_occupancy TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- «стандартное» размещение
-  max_occupancy  TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- всего гостей (взр.+дети)
+  max_occupancy  TINYINT UNSIGNED NOT NULL DEFAULT 2,  -- всего гостей (взр.+дети[+младенцы])
   max_adults     TINYINT UNSIGNED NOT NULL DEFAULT 2,
   max_children   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_infants    TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- макс. младенцев
+  -- если 1 — младенцы НЕ учитываются в max_occupancy (спят с родителями)
+  exclude_infants_occupancy TINYINT(1) NOT NULL DEFAULT 1,
   total_rooms    SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- физический фонд (потолок аллотмента)
+  -- физические атрибуты (описание + вторичные фильтры) --------------
+  qty_bedrooms   TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- спален
+  qty_livingrooms TINYINT UNSIGNED NOT NULL DEFAULT 0, -- гостиных
+  qty_bathrooms  TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- ванных
+  size           SMALLINT UNSIGNED NULL,               -- площадь, кв. м (NULL = неизвестно)
+  smoking        TINYINT(1) NOT NULL DEFAULT 0,        -- 0 = no smoking, 1 = smoking
+  floor          TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- 0 unknown, 1 ground, 2 high
+  room_view      TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- см. справочник room_views
   active         TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
   UNIQUE KEY uq_room_code (hotel_id, code),
   KEY idx_room_hotel (hotel_id, active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Справочник видов из окна (значения room.room_view). Вынес в таблицу,
+-- чтобы расширять без ALTER и переводить названия.
+--   0 unknown, 1 city, 2 garden, 3 sea, 4 lake, 5 mountain (уточнить)
+CREATE TABLE room_views (
+  id    TINYINT UNSIGNED NOT NULL,
+  code  VARCHAR(24)  NOT NULL,
+  name  VARCHAR(80)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_view_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Глобальный справочник питания: RO/BB/HB/FB/AI и т.п.
@@ -110,13 +133,24 @@ CREATE TABLE board_types (
 CREATE TABLE rate_plans (
   id                   INT UNSIGNED NOT NULL AUTO_INCREMENT,
   hotel_id             INT UNSIGNED NOT NULL,   -- денормализовано для поиска/rebuild
-  room_type_id         INT UNSIGNED NOT NULL,
+  room_id              INT UNSIGNED NOT NULL,
   board_type_id        TINYINT UNSIGNED NOT NULL,
   code                 VARCHAR(40)  NOT NULL,
   name                 VARCHAR(160) NOT NULL,
   currency             CHAR(3)      NOT NULL DEFAULT 'EUR',
   is_refundable        TINYINT(1)   NOT NULL DEFAULT 1,
   cancellation_policy_id INT UNSIGNED NULL,
+  -- модель ценообразования ------------------------------------------
+  --   1 = price per room (цена за номер, размещение не влияет)
+  --   2 = occupancy based (цена зависит от числа гостей — rate_prices по occupancy)
+  pricing_model        TINYINT UNSIGNED NOT NULL DEFAULT 2,
+  -- наследование от базового тарифа (derived rates) -----------------
+  parent_rate_plan_id  INT UNSIGNED NULL,       -- родитель, если тариф производный
+  --   0 independent, 1 parent+fixed, 2 parent-fixed,
+  --   3 parent+percent, 4 parent-percent, 5 same as parent
+  derive_type          TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  --   Fixed: minor units (копейки/центы). Percent: basis points (1000 = 10.00%)
+  derive_value         INT NOT NULL DEFAULT 0,
   -- ось 1: каналы дистрибуции (битовая маска sales_channels) ---------
   channel_mask         INT UNSIGNED NOT NULL DEFAULT 1,
   -- ось 2: публичность/приватность ----------------------------------
@@ -126,9 +160,10 @@ CREATE TABLE rate_plans (
   active               TINYINT(1)   NOT NULL DEFAULT 1,
   PRIMARY KEY (id),
   UNIQUE KEY uq_rp_code (hotel_id, code),
-  KEY idx_rp_room (room_type_id, active),
+  KEY idx_rp_room (room_id, active),
   KEY idx_rp_hotel (hotel_id, active),
-  KEY idx_rp_access (access_group_id)
+  KEY idx_rp_access (access_group_id),
+  KEY idx_rp_parent (parent_rate_plan_id)       -- для каскадной пересборки производных
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Каналы продаж (web, b2b, b2b2c, corp, mobile, api...) — биты channel_mask
@@ -198,12 +233,12 @@ CREATE TABLE access_codes (
 
 CREATE TABLE occupancy_options (
   id            SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  room_type_id  INT UNSIGNED NOT NULL,
+  room_id  INT UNSIGNED NOT NULL,
   adults        TINYINT UNSIGNED NOT NULL,
   children      TINYINT UNSIGNED NOT NULL DEFAULT 0,
   label         VARCHAR(40) NULL,        -- «2 взр», «2 взр + 1 реб»
   PRIMARY KEY (id),
-  UNIQUE KEY uq_occ (room_type_id, adults, children)
+  UNIQUE KEY uq_occ (room_id, adults, children)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -259,17 +294,17 @@ CREATE TABLE rate_restrictions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ (на уровне КАТЕГОРИИ room_type)
+-- 7. АЛЛОТМЕНТЫ / НАЛИЧИЕ (на уровне КАТЕГОРИИ room)
 --    Контракт на количество номеров — периодами. Наличие считается
 --    посуточно как allotment - booked - blocked. Хранится в отдельной
 --    посуточной таблице, т.к. меняется при каждом бронировании.
---    Все тарифы категории делят ОДИН счётчик наличия room_type.
+--    Все тарифы категории делят ОДИН счётчик наличия room.
 -- ---------------------------------------------------------------------
 
 -- Контракт аллотмента (периодами) — на категорию
 CREATE TABLE allotment_contracts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  room_type_id  INT UNSIGNED NOT NULL,   -- аллотмент общий на категорию
+  room_id  INT UNSIGNED NOT NULL,   -- аллотмент общий на категорию
   date_from     DATE NOT NULL,
   date_to       DATE NOT NULL,
   dow_mask      TINYINT UNSIGNED NOT NULL DEFAULT 127,
@@ -281,7 +316,7 @@ CREATE TABLE allotment_contracts (
   external_rev  BIGINT UNSIGNED NULL,
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_allot_lookup (room_type_id, date_from, date_to),
+  KEY idx_allot_lookup (room_id, date_from, date_to),
   KEY idx_allot_source (connection_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -290,7 +325,7 @@ CREATE TABLE allotment_contracts (
 -- Единственный авторитетный счётчик; бронь любого тарифа категории
 -- инкрементит booked именно здесь (атомарно, в транзакции).
 CREATE TABLE room_availability (
-  room_type_id  INT UNSIGNED NOT NULL,
+  room_id  INT UNSIGNED NOT NULL,
   stay_date     DATE NOT NULL,
   allotment     SMALLINT UNSIGNED NOT NULL DEFAULT 0,  -- контракт (может присылать CM/PMS)
   booked        SMALLINT UNSIGNED NOT NULL DEFAULT 0,   -- подтверждённые брони по всем тарифам категории
@@ -300,7 +335,7 @@ CREATE TABLE room_availability (
   connection_id INT UNSIGNED NULL,
   external_rev  BIGINT UNSIGNED NULL,   -- seq/timestamp источника (last-write-wins)
   updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (room_type_id, stay_date)
+  PRIMARY KEY (room_id, stay_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -341,7 +376,7 @@ CREATE TABLE extras (
   price         DECIMAL(10,2) NOT NULL,
   currency      CHAR(3) NOT NULL DEFAULT 'EUR',
   is_mandatory  TINYINT(1) NOT NULL DEFAULT 0,
-  scope         ENUM('hotel','room_type','rate_plan') NOT NULL DEFAULT 'hotel',
+  scope         ENUM('hotel','room','rate_plan') NOT NULL DEFAULT 'hotel',
   PRIMARY KEY (id),
   KEY idx_extra_hotel (hotel_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

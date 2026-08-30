@@ -70,8 +70,8 @@ CREATE TABLE provider_connections (
 CREATE TABLE external_mappings (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   connection_id INT UNSIGNED NOT NULL,
-  entity_type   ENUM('room_type','rate_plan','board','occupancy') NOT NULL,
-  internal_id   INT UNSIGNED NOT NULL,           -- наш id (room_type_id / rate_plan_id ...)
+  entity_type   ENUM('room','rate_plan','board','occupancy') NOT NULL,
+  internal_id   INT UNSIGNED NOT NULL,           -- наш id (room_id / rate_plan_id ...)
   external_code VARCHAR(80) NOT NULL,            -- код на стороне провайдера
   PRIMARY KEY (id),
   UNIQUE KEY uq_map_ext (connection_id, entity_type, external_code),
@@ -127,8 +127,8 @@ CREATE TABLE ari_outbox (
 -- ---------------------------------------------------------------------
 CREATE TABLE cache_rebuild_queue (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  scope         ENUM('rate_plan','room_type','hotel') NOT NULL,
-  scope_id      INT UNSIGNED NOT NULL,           -- rate_plan_id / room_type_id / hotel_id
+  scope         ENUM('rate_plan','room','hotel') NOT NULL,
+  scope_id      INT UNSIGNED NOT NULL,           -- rate_plan_id / room_id / hotel_id
   date_from     DATE NOT NULL,
   date_to       DATE NOT NULL,
   reason        VARCHAR(40) NOT NULL,            -- 'ari_rate','ari_avail','booking','manual'
@@ -169,12 +169,12 @@ VALUES (:conn, :uid, :type, :rev, :payload);
 
 -- (b) Применение обновления НАЛИЧИЯ с last-write-wins по external_rev.
 --     Наличие ключуется на КАТЕГОРИЮ: CM шлёт «room» -> external_mappings
---     резолвит его в room_type_id. Обновляем только если пришедшая ревизия
+--     резолвит его в room_id. Обновляем только если пришедшая ревизия
 --     не старше сохранённой и подключению разрешено управлять наличием.
 INSERT INTO room_availability
-   (room_type_id, stay_date, allotment, booked, blocked,
+   (room_id, stay_date, allotment, booked, blocked,
     managed_by, connection_id, external_rev, updated_at)
-VALUES (:room_type_id, :date, :allotment, 0, 0,
+VALUES (:room_id, :date, :allotment, 0, 0,
         'channel_manager', :conn, :rev, NOW())
 ON DUPLICATE KEY UPDATE
    allotment     = IF(:rev >= IFNULL(external_rev,0), VALUES(allotment), allotment),
@@ -184,6 +184,6 @@ ON DUPLICATE KEY UPDATE
    updated_at    = NOW();
 
 -- (c) Поставить задачу на пересборку кэша по затронутой категории и диапазону.
---     Воркер развернёт её в ВСЕ тарифы этого room_type.
+--     Воркер развернёт её в ВСЕ тарифы этого room.
 INSERT INTO cache_rebuild_queue (scope, scope_id, date_from, date_to, reason)
-VALUES ('room_type', :room_type_id, :date_from, :date_to, 'ari_avail');
+VALUES ('room', :room_id, :date_from, :date_to, 'ari_avail');

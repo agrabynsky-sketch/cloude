@@ -22,7 +22,7 @@ CREATE TABLE search_daily (
   hotel_id       INT UNSIGNED     NOT NULL,
   city_id        INT UNSIGNED     NOT NULL,   -- для поиска «по городу» без JOIN
   country_id     SMALLINT UNSIGNED NOT NULL,
-  room_type_id   INT UNSIGNED     NOT NULL,
+  room_id        INT UNSIGNED     NOT NULL,
   rate_plan_id   INT UNSIGNED     NOT NULL,
   board_type_id  TINYINT UNSIGNED NOT NULL,
   occupancy_id   SMALLINT UNSIGNED NOT NULL,
