@@ -52,6 +52,11 @@ CREATE TABLE hotels (
   timezone       VARCHAR(40)  NOT NULL DEFAULT 'UTC',
   checkin_time   TIME         NULL,
   checkout_time  TIME         NULL,
+  -- налоги и сборы: ссылки на переиспользуемые политики + флаги «в цене» --
+  vat_policy_id  INT UNSIGNED NULL,           -- политика НДS (tax_policies)
+  vat_included   TINYINT(1)   NOT NULL DEFAULT 1,  -- НДС уже в цене тарифа?
+  fee_policy_id  INT UNSIGNED NULL,           -- политика сборов (fee_policies)
+  fee_included   TINYINT(1)   NOT NULL DEFAULT 0,  -- сборы уже в цене тарифа?
   status         ENUM('active','inactive','draft') NOT NULL DEFAULT 'draft',
   created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -60,6 +65,32 @@ CREATE TABLE hotels (
   KEY idx_hotel_city (city_id),
   KEY idx_hotel_country (country_id),
   KEY idx_hotel_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------
+-- Переиспользуемые ПОЛИТИКИ налогов и сборов (справочники).
+-- Отель ссылается на них по id (hotels.vat_policy_id / fee_policy_id).
+-- В горячий поиск НЕ входят — PHP применяет их к финальной цене.
+-- ---------------------------------------------------------------------
+
+-- Политика НДС (обычно процент).
+CREATE TABLE tax_policies (
+  id       INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name     VARCHAR(120) NOT NULL,          -- «НДС 20%», «VAT 7%»
+  percent  DECIMAL(6,4) NOT NULL,          -- 20.0000 = 20%
+  active   TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Политика сборов (городской/курортный сбор и т.п.).
+CREATE TABLE fee_policies (
+  id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(120) NOT NULL,        -- «City tax», «Resort fee»
+  calc_type  ENUM('per_night_per_person','per_night_per_room','per_stay_per_person','percent','fixed') NOT NULL,
+  value      DECIMAL(10,4) NOT NULL,       -- percent: 2.0000=2%; иначе сумма
+  currency   CHAR(3) NULL,                 -- для суммовых типов
+  active     TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -386,31 +417,6 @@ CREATE TABLE rate_plan_extras (
   rate_plan_id  INT UNSIGNED NOT NULL,
   extra_id      INT UNSIGNED NOT NULL,
   PRIMARY KEY (rate_plan_id, extra_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ---------------------------------------------------------------------
--- 10. НАЛОГИ И СБОРЫ (VAT, городской/курортный сбор) — на уровне отеля
---     Флаг included_in_price решает: уже в цене (справочно) или PHP
---     добавляет к финальной цене. В горячий поиск НЕ входят — считаются
---     на выбранных строках (запрос E), поэтому не тормозят выдачу.
--- ---------------------------------------------------------------------
-CREATE TABLE taxes_fees (
-  id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  hotel_id          INT UNSIGNED NOT NULL,
-  kind              ENUM('vat','city_tax','resort_fee','service','other') NOT NULL,
-  name              VARCHAR(120) NOT NULL,
-  calc_type         ENUM('percent','per_night_per_person','per_night_per_room','per_stay_per_person','fixed') NOT NULL,
-  value             DECIMAL(10,4) NOT NULL,      -- percent: 20.0000 = 20%; иначе сумма
-  currency          CHAR(3) NULL,                -- для суммовых типов
-  included_in_price TINYINT(1) NOT NULL DEFAULT 0, -- 1 = уже включено; 0 = добавляется
-  -- необязательные ограничения применения
-  applies_from      DATE NULL,
-  applies_to        DATE NULL,
-  age_min           TINYINT UNSIGNED NULL,       -- напр. city tax только для взрослых
-  sort              SMALLINT NOT NULL DEFAULT 0, -- порядок применения (важно для НДС поверх сборов)
-  active            TINYINT(1) NOT NULL DEFAULT 1,
-  PRIMARY KEY (id),
-  KEY idx_tax_hotel (hotel_id, active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
