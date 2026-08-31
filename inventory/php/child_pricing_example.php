@@ -63,11 +63,15 @@ final class ChildRate
     ) {}
 }
 
-/** Что делать, если на возраст нет строки child_rates. */
+/**
+ * Что делать, если возраст ребёнка ВНЕ заданных диапазонов child_rates
+ * (старше верхнего порога или попал в «дыру» между диапазонами).
+ * ДЕФОЛТ = AsAdult: считать как доп. взрослого.
+ */
 enum NoChildRatePolicy: string
 {
-    case Reject  = 'reject';    // безопасно: тариф не продаём этим детям (дефолт)
-    case AsAdult = 'as_adult';  // считать ребёнка как доп. взрослого
+    case AsAdult = 'as_adult';  // считать ребёнка как доп. взрослого (ДЕФОЛТ)
+    case Reject  = 'reject';    // не продавать тариф этим детям
 }
 
 // ───────────────────────────── провайдер конфига ─────────────────────────
@@ -109,31 +113,32 @@ function childSurcharge(
     GuestRequest $req,
     HotelChildPolicy $policy,
     array $rates,                 // ChildRate[]
-    NoChildRatePolicy $fallback = NoChildRatePolicy::Reject,
+    NoChildRatePolicy $fallback = NoChildRatePolicy::AsAdult,
 ): ?float {
     if ($req->childrenAges === []) {
         return 0.0;
     }
     if (!$policy->allowChildren) {
-        return null; // отель детей не принимает
+        return null; // отель детей не принимает вообще
     }
 
-    $adultNightly = $c->adultTotal / max(1, $c->nights); // ночь размещения (для percent)
+    $adultNightly = $c->adultTotal / max(1, $c->nights);   // ночь размещения (для percent)
+    $adultShare   = $c->adultTotal / max(1, $req->adults);  // доля ОДНОГО взрослого за стей
     $sum = 0.0;
 
     foreach ($req->childrenAges as $age) {
-        if ($age < $policy->minAge) {
-            return null; // возраст ниже допустимого политикой -> тариф не продаём
+        if ($policy->minAge > 0 && $age < $policy->minAge) {
+            return null; // младше минимально допустимого возраста -> отель не размещает
         }
 
         $rate = rateForAge($age, $rates);
         if ($rate === null) {
-            // НЕТ детской ставки на этот возраст:
+            // Возраст ВНЕ заданных диапазонов (старше порога или «дыра»):
             if ($fallback === NoChildRatePolicy::AsAdult) {
-                $sum += $adultNightly * $c->nights;
+                $sum += $adultShare;   // считаем как доп. взрослого (доля 1 взрослого)
                 continue;
             }
-            return null; // Reject (дефолт): исключаем тариф
+            return null; // Reject: исключаем тариф
         }
 
         $sum += match ($rate->chargeType) {
@@ -158,7 +163,7 @@ function minPricePerHotel(
     array $candidates,
     GuestRequest $req,
     ChildConfig $cfg,
-    NoChildRatePolicy $fallback = NoChildRatePolicy::Reject,
+    NoChildRatePolicy $fallback = NoChildRatePolicy::AsAdult,
 ): array {
     $best = [];
     foreach ($candidates as $c) {
@@ -194,13 +199,13 @@ $cfg = new class implements ChildConfig {
         return [
             new ChildRate(0, 5,  'free',  0,   'per_child_night'),   // 0-5 бесплатно
             new ChildRate(6, 10, 'fixed', 100, 'per_child_night'),   // 6-10 = 100/ночь
-            // 11-17 не заданы -> дети этого возраста => тариф исключается (Reject)
+            // 11-17 НЕ заданы -> по дефолту (AsAdult) считаются как взрослый
         ];
     }
 };
 
-// Запрос: 2 взрослых + дети 3 и 8, 3 ночи.
-$req = new GuestRequest(adults: 2, childrenAges: [3, 8], nights: 3);
+// Запрос: 2 взрослых + дети 3, 8 и 14, 3 ночи.
+$req = new GuestRequest(adults: 2, childrenAges: [3, 8, 14], nights: 3);
 
 $candidates = [
     new RateCandidate(500, 4500, 111, 'INR', adultTotal: 3000.0, nights: 3),
@@ -209,12 +214,13 @@ $candidates = [
 
 print_r(minPricePerHotel($candidates, $req, $cfg));
 /*
-Ребёнок 3 -> 0-5 free -> 0
-Ребёнок 8 -> 6-10 fixed 100/ночь -> 100*3 = 300
-Отель 500: 3000 + 300 = 3300
-Отель 700: 2800 + 300 = 3100
-=> [500 => 3300, 700 => 3100]
+Ребёнок 3  -> 0-5 free           -> 0
+Ребёнок 8  -> 6-10 fixed 100/ночь -> 300
+Ребёнок 14 -> ВНЕ диапазонов -> AsAdult -> доля взрослого = adultTotal/adults
+Отель 500: доля = 3000/2 = 1500 -> 3000 + 0 + 300 + 1500 = 4800
+Отель 700: доля = 2800/2 = 1400 -> 2800 + 0 + 300 + 1400 = 4500
+=> [500 => 4800, 700 => 4500]
 
-Если бы был ребёнок 12 (нет ставки, Reject): оба тарифа исключены,
-отели без других тарифов исчезают из выдачи.
+С политикой Reject (NoChildRatePolicy::Reject) ребёнок 14 без ставки
+исключил бы тариф целиком.
 */
