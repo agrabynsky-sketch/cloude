@@ -41,13 +41,13 @@ SELECT rm.hotel_id, rm.id,
        63, 'public', 0, 2, 1
 FROM room rm JOIN seq_1_to_3 rp;
 
--- occupancy_options: 3 варианта на room (для полноты Слоя 1)
-INSERT INTO occupancy_options (room_id, adults, children, label)
-SELECT rm.id, o.a, o.c, o.lbl
+-- occupancy_options: базовые варианты по числу ВЗРОСЛЫХ (1/2/3)
+INSERT INTO occupancy_options (room_id, adults, label)
+SELECT rm.id, o.a, o.lbl
 FROM room rm
-JOIN (SELECT 1 a,0 c,'1 adult' lbl
-      UNION ALL SELECT 2,0,'2 adults'
-      UNION ALL SELECT 2,1,'2 adults + 1 child') o;
+JOIN (SELECT 1 a,'1 adult' lbl
+      UNION ALL SELECT 2,'2 adults'
+      UNION ALL SELECT 3,'3 adults') o;
 
 SELECT
  (SELECT COUNT(*) FROM hotels)      AS hotels,

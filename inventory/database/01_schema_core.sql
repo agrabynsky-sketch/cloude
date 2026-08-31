@@ -257,46 +257,56 @@ CREATE TABLE access_codes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 4. ВОЗРАСТ ДЕТЕЙ И РАЗМЕЩЕНИЕ (occupancy)
---    Цена зависит от ВОЗРАСТА детей. Чтобы быстрый поиск сотен отелей
---    работал одним :occ, возрастные группы — ГЛОБАЛЬНЫЕ (платформенные).
---    Детские политики отелей/контрактов маппятся в эти группы при
---    загрузке (PHP). Запрос «дети 6 и 8» -> одинаковые бэнды во всех
---    отелях -> один occ_key.
+-- 4. РАЗМЕЩЕНИЕ (occupancy) И ДЕТСКОЕ ЦЕНООБРАЗОВАНИЕ ПО ВОЗРАСТУ
+--    Цена делится на ДВЕ части:
+--      (1) База по ВЗРОСЛЫМ — occupancy_options + rate_prices, попадает в
+--          search_daily (ключ occupancy_id = число взрослых). Быстрый скан.
+--      (2) Детская доплата ПО ВОЗРАСТУ — компактный ПЕР-ОТЕЛЬНЫЙ конфиг
+--          (child_age_bands + child_prices). В горячий скан НЕ входит;
+--          PHP считает её на наборе кандидатов под точные возрасты детей.
+--    Так возрасты остаются пер-отельными и точными, а кэш — лёгким.
 -- ---------------------------------------------------------------------
 
--- Глобальные возрастные группы Unit.Travel (порядок = позиция в occ_key).
--- Инфанты (0-1) обрабатываются отдельно (room.max_infants), в occ не входят.
-CREATE TABLE child_age_bands (
-  id        TINYINT UNSIGNED NOT NULL,   -- 1..N; 0 зарезервирован под взрослых
-  code      VARCHAR(24) NOT NULL,        -- 'infant','young','child','teen'
-  name      VARCHAR(60) NOT NULL,
-  age_from  TINYINT UNSIGNED NOT NULL,   -- включительно
-  age_to    TINYINT UNSIGNED NOT NULL,   -- включительно
-  in_occupancy TINYINT(1) NOT NULL DEFAULT 1,  -- 0 = не тарифицируется (инфант)
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_band_code (code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Размещения, которые продаёт категория: взрослые + СОСТАВ ДЕТЕЙ ПО БЭНДАМ.
--- occ_key — стабильная ГЛОБАЛЬНАЯ подпись размещения (одинакова во всех
--- отелях), её же хранит search_daily.occupancy_id. Кодировка (пример на
--- 3 тарифицируемых бэнда): adults*1000 + b1*100 + b2*10 + b3.
--- Число тарифицируемых бэндов фиксировано платформой; при желании расширить —
--- увеличить разрядность occ_key и число колонок band_qty*.
+-- Базовое размещение по числу ВЗРОСЛЫХ (single/double/extra-adult).
+-- occupancy_id в кэше = adults. Дети в этот ключ НЕ входят.
 CREATE TABLE occupancy_options (
   id            SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   room_id       INT UNSIGNED NOT NULL,
   adults        TINYINT UNSIGNED NOT NULL,
-  band1_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- детей в бэнде 1 (напр. 2-6)
-  band2_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- бэнд 2 (напр. 7-12)
-  band3_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- бэнд 3 (напр. 13-17)
-  children      TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- всего детей (= b1+b2+b3, для вывода)
-  occ_key       INT UNSIGNED NOT NULL,                -- adults*1000 + b1*100 + b2*10 + b3
-  label         VARCHAR(60) NULL,        -- «2 взр + реб 2-6 + реб 7-12»
+  label         VARCHAR(40) NULL,        -- «1 взр», «2 взр», «3 взр»
   PRIMARY KEY (id),
-  UNIQUE KEY uq_occ (room_id, occ_key),
-  KEY idx_occ_key (occ_key)
+  UNIQUE KEY uq_occ (room_id, adults)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ПЕР-ОТЕЛЬНЫЕ возрастные группы. hotel_id = NULL -> платформенный дефолт
+-- (fallback, если у отеля своих бэндов нет). in_pricing=0 -> инфант
+-- (бесплатно, вне вместимости-оплаты; вместимость через room.max_infants).
+CREATE TABLE child_age_bands (
+  id        INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  hotel_id  INT UNSIGNED NULL,           -- NULL = глобальный дефолт
+  band_no   TINYINT UNSIGNED NOT NULL,   -- 1..N (порядок), для ссылки из child_prices
+  name      VARCHAR(60) NOT NULL,        -- «Child 2-11», «Teen 12-17»
+  age_from  TINYINT UNSIGNED NOT NULL,   -- включительно
+  age_to    TINYINT UNSIGNED NOT NULL,   -- включительно
+  in_pricing TINYINT(1) NOT NULL DEFAULT 1,  -- 0 = инфант/бесплатно
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_band (hotel_id, band_no),
+  KEY idx_band_hotel (hotel_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Детская цена по бэнду и периоду (пер-отельно, привязка к тарифу).
+-- charge_type: free / percent (% от взрослой ночи) / fixed (сумма за ребёнка/ночь).
+-- PHP берёт возраст ребёнка -> бэнд отеля -> строку child_prices -> доплата.
+CREATE TABLE child_prices (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  rate_plan_id  INT UNSIGNED NOT NULL,   -- питание влияет -> привязка к тарифу
+  band_no       TINYINT UNSIGNED NOT NULL,  -- ссылка на child_age_bands.band_no отеля
+  date_from     DATE NOT NULL,
+  date_to       DATE NOT NULL,
+  charge_type   ENUM('free','percent','fixed') NOT NULL,
+  value         DECIMAL(10,2) NOT NULL DEFAULT 0,  -- percent: 50.00=50%; fixed: сумма/ночь
+  PRIMARY KEY (id),
+  KEY idx_childprice (rate_plan_id, band_no, date_from, date_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------

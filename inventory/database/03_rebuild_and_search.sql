@@ -26,14 +26,16 @@ DELETE FROM search_daily
 -- обязательные per-night extras прибавляем к цене в PHP или подзапросом)
 INSERT INTO search_daily
   (hotel_id, city_id, country_id, room_id, rate_plan_id, board_type_id,
-   occupancy_id, adults, children, max_infants, is_refundable, stay_date,
+   occupancy_id, adults, max_occupancy, max_adults, max_children, max_infants,
+   is_refundable, stay_date,
    price, currency, available,
    min_stay, max_stay, cta, ctd, closed, min_advance, max_advance,
    channel_mask, visibility, access_group_id)
 SELECT
    rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
-   o.occ_key, o.adults, o.children,   -- occupancy_id = глоб. подпись (взр + бэнды детей)
-   rt.max_infants, rp.is_refundable, cal.d,
+   o.adults, o.adults,                -- occupancy_id = число взрослых (база)
+   rt.max_occupancy, rt.max_adults, rt.max_children, rt.max_infants,
+   rp.is_refundable, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
    GREATEST(LEAST(CAST(av.allotment AS SIGNED), rt.total_rooms)
@@ -93,10 +95,16 @@ WHERE cal.d BETWEEN :from AND :to;
 --  Вход из PHP:
 --    :checkin  — дата заезда
 --    :checkout — дата выезда  (ночей = DATEDIFF(:checkout,:checkin) = :nights)
---    :occ      — глоб. подпись размещения occ_key = adults*1000 + b1*100
---                + b2*10 + b3, где b1..b3 — число детей в каждом возрастном
---                бэнде. PHP: возраст ребёнка -> child_age_bands -> счётчики.
---                Пример: 2 взр + дети 6 и 8 -> b1(2-6)=1, b2(7-12)=1 -> 2110.
+--    :occ      — число ВЗРОСЛЫХ (= базовое размещение). Дети НЕ в ключе.
+--    :guests   — всего гостей (взр+дети без инфантов) для фильтра вместимости
+--    :children :infants — счётчики для фильтра вместимости (не цены)
+--
+--  ДЕТИ ПО ВОЗРАСТУ: SQL считает только БАЗУ по взрослым и фильтрует
+--  вместимость. Детскую доплату по точным возрастам (пер-отельно,
+--  child_age_bands + child_prices) добавляет PHP на наборе кандидатов.
+--  Поэтому при наличии детей SQL возвращает НАБОР (по rate_plan), а min
+--  по отелю берёт PHP уже с детьми (детская доплата может поменять, какой
+--  тариф дешевле). Без детей min берёт сам SQL (как ниже).
 --    :rooms    — сколько номеров нужно (обычно 1)
 --    :channel  — бит канала (напр. 1 = web B2C, 2 = b2b, ...)
 --    :hotels   — список hotel_id (или используйте city_id вариант)
@@ -148,7 +156,10 @@ FROM (
            OR sd.access_group_id IN ( /* :groups */ ))       --   или доступный зрителю
       AND (:board IS NULL OR sd.board_type_id = :board)      -- тип питания
       AND (:refundable_only = 0 OR sd.is_refundable = 1)     -- только free cancellation
-      AND sd.max_infants >= :infants                         -- вместимость по младенцам
+      -- ВМЕСТИМОСТЬ (счётчики, без возрастов):
+      AND sd.max_occupancy >= :guests                        -- взр+дети влезают
+      AND sd.max_children  >= :children
+      AND sd.max_infants   >= :infants
     GROUP BY sd.hotel_id, sd.rate_plan_id
     HAVING nights = :nights
        AND cta_block = 0
@@ -199,10 +210,13 @@ FROM (
       AND (sd.access_group_id = 0 OR sd.access_group_id IN ( /* :groups */ ))
       AND (:board IS NULL OR sd.board_type_id = :board)
       AND (:refundable_only = 0 OR sd.is_refundable = 1)
+      AND sd.max_occupancy >= :guests AND sd.max_children >= :children
       AND sd.max_infants >= :infants
     GROUP BY sd.hotel_id, sd.rate_plan_id
     HAVING nights = :nights AND cta_block = 0 AND minstay_block = 0
 ) AS ok_rates
+-- Без детей: min берёт SQL (ниже). С детьми: убрать внешний GROUP BY/MIN и
+-- отдать per-(hotel,rate_plan) в PHP — он добавит детскую доплату и возьмёт min.
 GROUP BY hotel_id                    -- ОДНА строка на отель = одна мин. цена за период
 ORDER BY min_total_price ASC
 LIMIT :page;   -- пагинация выдачи по городу
@@ -240,6 +254,7 @@ WHERE sd.hotel_id = :hotel                    -- один отель
   AND (sd.access_group_id = 0 OR sd.access_group_id IN ( /* :groups */ ))
   AND (:board IS NULL OR sd.board_type_id = :board)
   AND (:refundable_only = 0 OR sd.is_refundable = 1)
+  AND sd.max_occupancy >= :guests AND sd.max_children >= :children
   AND sd.max_infants >= :infants
 GROUP BY sd.room_id, sd.rate_plan_id, sd.board_type_id, sd.is_refundable, sd.currency
 HAVING COUNT(*) = :nights
@@ -247,8 +262,13 @@ HAVING COUNT(*) = :nights
    AND MAX(CASE WHEN sd.stay_date = :checkin AND sd.min_stay > :nights THEN 1 ELSE 0 END) = 0
    -- + max_stay / advance аналогично B
 ORDER BY total_raw_price ASC;
--- PHP далее: налоги/сборы (hotels.vat_policy_id/fee_policy_id), опциональные extras, наценка,
--- конвертация валют, штраф отмены (cancellation_rules) — на этих строках.
+-- total_raw_price здесь = БАЗА по взрослым за период (нетто, без детей).
+-- PHP далее на этих строках:
+--   1) ДЕТСКАЯ доплата по возрасту: возраст ребёнка -> child_age_bands отеля
+--      -> child_prices(rate_plan, band, период) -> +сумма за ночи;
+--   2) налоги/сборы (hotels.vat_policy_id/fee_policy_id), опц. extras, наценка,
+--      валюта, штраф отмены (cancellation_rules).
+-- Итоговая цена = база(взрослые) + дети(по возрасту) + сборы. Затем MIN по отелю.
 
 
 -- ---------------------------------------------------------------------

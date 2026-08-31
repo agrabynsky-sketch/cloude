@@ -1,6 +1,6 @@
 -- =====================================================================
 --  Unit.Travel — ДЕМО: 3 тестовых поисковых запроса
---  Параметры: 2 взрослых (occ=200), заезд 2026-07-10, выезд 2026-07-13
+--  Параметры: 2 взрослых (occupancy_id=2), заезд 2026-07-10, выезд 2026-07-13
 --             (3 ночи), канал web (bit 1), публичный поиск.
 -- =====================================================================
 
@@ -13,7 +13,7 @@ FROM (
          MAX(CASE WHEN sd.stay_date='2026-07-10' AND sd.cta=1 THEN 1 ELSE 0 END) cta_block,
          MAX(CASE WHEN sd.stay_date='2026-07-10' AND sd.min_stay>3 THEN 1 ELSE 0 END) minstay_block
   FROM search_daily sd
-  WHERE sd.occupancy_id=200
+  WHERE sd.occupancy_id=2
     AND sd.stay_date>='2026-07-10' AND sd.stay_date<'2026-07-13'
     AND sd.hotel_id IN (SELECT seq*5 FROM seq_1_to_200)   -- 200 отелей, разбросаны
     AND sd.closed=0 AND sd.available>=1
@@ -30,7 +30,7 @@ FROM (
          MAX(CASE WHEN sd.stay_date='2026-07-10' AND sd.cta=1 THEN 1 ELSE 0 END) cta_block,
          MAX(CASE WHEN sd.stay_date='2026-07-10' AND sd.min_stay>3 THEN 1 ELSE 0 END) minstay_block
   FROM search_daily sd
-  WHERE sd.occupancy_id=200
+  WHERE sd.occupancy_id=2
     AND sd.stay_date>='2026-07-10' AND sd.stay_date<'2026-07-13'
     AND sd.city_id=7
     AND sd.closed=0 AND sd.available>=1
@@ -46,7 +46,7 @@ SELECT sd.room_id, sd.rate_plan_id, sd.board_type_id, sd.is_refundable,
        SUM(sd.price) AS total_raw_price, MIN(sd.available) AS min_avail
 FROM search_daily sd
 WHERE sd.hotel_id=500
-  AND sd.occupancy_id=200
+  AND sd.occupancy_id=2
   AND sd.stay_date>='2026-07-10' AND sd.stay_date<'2026-07-13'
   AND sd.closed=0 AND sd.available>=1
   AND (sd.channel_mask & 1) AND sd.access_group_id=0

@@ -25,16 +25,18 @@ CREATE TABLE search_daily (
   room_id        INT UNSIGNED     NOT NULL,
   rate_plan_id   INT UNSIGNED     NOT NULL,
   board_type_id  TINYINT UNSIGNED NOT NULL,   -- фильтр по типу питания
-  -- ГЛОБАЛЬНАЯ подпись размещения occ_key = adults*1000 + b1*100 + b2*10 + b3,
-  -- где b1..b3 — число детей в каждом ВОЗРАСТНОМ бэнде (child_age_bands).
-  -- Учитывает возраст детей и одинакова во ВСЕХ отелях (бэнды глобальные),
-  -- поэтому :occ фильтрует сотни отелей одним значением, а цена в строке
-  -- уже посчитана под этот возрастной состав. INT — с запасом на расширение
-  -- числа бэндов (при 4+ бэндах кодировка выходит за SMALLINT).
-  occupancy_id   INT UNSIGNED     NOT NULL,
-  adults         TINYINT UNSIGNED NOT NULL,   -- денормализовано (для вывода/отладки)
-  children       TINYINT UNSIGNED NOT NULL,
-  max_infants    TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- вместимость по младенцам (room)
+  -- occupancy_id = число ВЗРОСЛЫХ (базовое размещение). Дети в ключ НЕ
+  -- входят: детская доплата по возрасту считается PHP (пер-отельно) на
+  -- наборе кандидатов. Одинаков во всех отелях -> :occ фильтрует сотни
+  -- отелей одним значением.
+  occupancy_id   TINYINT UNSIGNED NOT NULL,   -- = adults
+  adults         TINYINT UNSIGNED NOT NULL,
+  -- ВМЕСТИМОСТЬ (денормализована из room) — фильтр «влезает ли компания»
+  -- считается в SQL по счётчикам, без возрастов:
+  max_occupancy  TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- всего гостей (взр+дети)
+  max_adults     TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_children   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_infants    TINYINT UNSIGNED NOT NULL DEFAULT 0,
   is_refundable  TINYINT(1)       NOT NULL DEFAULT 1,  -- фильтр «только с бесплатной отменой»
   stay_date      DATE             NOT NULL,
 

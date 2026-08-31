@@ -17,20 +17,23 @@ BEGIN
   WHILE lo < p_days DO
     INSERT INTO search_daily
       (hotel_id, city_id, country_id, room_id, rate_plan_id, board_type_id,
-       occupancy_id, adults, children, max_infants, is_refundable, stay_date,
+       occupancy_id, adults, max_occupancy, max_adults, max_children, max_infants,
+       is_refundable, stay_date,
        price, currency, available,
        min_stay, max_stay, cta, ctd, closed, min_advance, max_advance,
        channel_mask, visibility, access_group_id)
     SELECT
        rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
-       occ.ok, occ.a, occ.c, rm.max_infants, rp.is_refundable,
+       occ.a, occ.a,                                               -- occupancy_id = adults
+       rm.max_occupancy, rm.max_adults, rm.max_children, rm.max_infants,
+       rp.is_refundable,
        DATE_ADD('2026-01-01', INTERVAL (lo + d.seq) DAY)          AS stay_date,
-       -- финальная цена за ночь (детерминированная, но с разбросом):
+       -- БАЗОВАЯ цена по взрослым за ночь (дети досчитываются в PHP):
        50
        + (rp.hotel_id % 40) * 3                                    -- «звёздность» отеля
        + (rp.room_id % 5) * 12                                     -- категория
        + (rp.id % 3) * 8                                           -- тариф
-       + occ.a * 25 + occ.c * 12                                   -- размещение
+       + occ.a * 25                                               -- взрослые
        + CASE WHEN MONTH(DATE_ADD('2026-01-01', INTERVAL (lo+d.seq) DAY)) IN (6,7,8) THEN 60
               WHEN MONTH(DATE_ADD('2026-01-01', INTERVAL (lo+d.seq) DAY)) IN (12,1) THEN 30
               ELSE 15 END                                          -- сезон
@@ -43,9 +46,7 @@ BEGIN
     FROM rate_plans rp
     JOIN room rm   ON rm.id = rp.room_id
     JOIN hotels h  ON h.id  = rp.hotel_id
-    JOIN (SELECT 100 ok,1 a,0 c
-          UNION ALL SELECT 200,2,0
-          UNION ALL SELECT 201,2,1) occ
+    JOIN (SELECT 1 a UNION ALL SELECT 2 UNION ALL SELECT 3) occ    -- 1/2/3 взрослых
     JOIN seq_0_to_29 d
     WHERE (lo + d.seq) < p_days;
     SET lo = lo + 30;
