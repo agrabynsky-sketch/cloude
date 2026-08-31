@@ -3,31 +3,28 @@ declare(strict_types=1);
 
 /**
  * Unit.Travel — финализация цен с учётом ВОЗРАСТА детей.
+ * Модель как в Booking.com Extranet: Child policy + Child rates на уровне ОТЕЛЯ,
+ * произвольное число возрастных диапазонов 0-17.
  *
  * SQL (запросы B/C/E из database/03_rebuild_and_search.sql) уже:
- *   - отфильтровал вместимость (max_children/max_occupancy/max_infants),
- *     поэтому отели, НЕ размещающие детей, сюда не приходят;
+ *   - отфильтровал ВМЕСТИМОСТЬ (max_children/max_occupancy/max_infants),
+ *     поэтому номера/отели без детского размещения сюда не приходят;
  *   - вернул кандидатов: по одной строке на (hotel_id, rate_plan_id) с
  *     БАЗОВОЙ ценой по взрослым за весь период (adult_total).
  *
- * Здесь мы:
- *   1) для каждого кандидата считаем детскую доплату под ТОЧНЫЕ возрасты
- *      (пер-отельные бэнды + child_prices тарифа);
- *   2) если у тарифа нет цены на ребёнка этого возраста — исключаем тариф
- *      (или считаем ребёнка взрослым — по политике);
- *   3) берём минимальную ПОЛНУЮ цену по каждому отелю.
+ * Здесь: считаем детскую доплату под ТОЧНЫЕ возрасты по child_rates отеля и
+ * берём минимальную ПОЛНУЮ цену на отель.
  */
 
 // ─────────────────────────── входные структуры ───────────────────────────
 
-/** Запрос гостей. Инфанты (0-1) — отдельно, бесплатны, в childrenAges НЕ входят. */
+/** Запрос гостей. Инфанты входят в childrenAges как обычный возраст (0-1). */
 final class GuestRequest
 {
-    /** @param int[] $childrenAges напр. [6, 8] */
+    /** @param int[] $childrenAges напр. [3, 8] */
     public function __construct(
         public readonly int $adults,
         public readonly array $childrenAges,
-        public readonly int $infants = 0,
         public readonly int $nights = 1,
     ) {}
 }
@@ -45,56 +42,59 @@ final class RateCandidate
     ) {}
 }
 
-/** Возрастной бэнд отеля (child_age_bands). */
-final class AgeBand
+/** Детская политика отеля (hotels.allow_children / children_min_age). */
+final class HotelChildPolicy
 {
     public function __construct(
-        public readonly int $bandNo,
-        public readonly int $ageFrom,   // включительно
-        public readonly int $ageTo,     // включительно
-        public readonly bool $inPricing, // false = инфант/бесплатно
+        public readonly bool $allowChildren,
+        public readonly int $minAge = 0,   // 0 = Any
     ) {}
 }
 
-/** Детская цена по бэнду для тарифа (child_prices, уже под даты стея). */
-final class ChildPrice
+/** Одна строка child_rates: возрастной диапазон + его цена (как у Booking). */
+final class ChildRate
 {
     public function __construct(
+        public readonly int $ageFrom,      // включительно
+        public readonly int $ageTo,        // включительно
         public readonly string $chargeType, // 'free' | 'percent' | 'fixed'
-        public readonly float $value,       // percent: 50 = 50% от взрослой ночи; fixed: сумма/ночь
+        public readonly float $amount,      // percent: 50=50%; fixed: сумма
+        public readonly string $unit = 'per_child_night', // | 'per_child_stay'
     ) {}
 }
 
-/** Что делать, если у тарифа нет цены на ребёнка этого возраста. */
-enum NoChildPricePolicy: string
+/** Что делать, если на возраст нет строки child_rates. */
+enum NoChildRatePolicy: string
 {
     case Reject  = 'reject';    // безопасно: тариф не продаём этим детям (дефолт)
-    case AsAdult = 'as_adult';  // считать ребёнка как доп. взрослого (по контракту)
+    case AsAdult = 'as_adult';  // считать ребёнка как доп. взрослого
 }
 
 // ───────────────────────────── провайдер конфига ─────────────────────────
 
 /**
- * Отдаёт пер-отельные бэнды и детские цены. В бою — batch-загрузка ОДНИМ
- * запросом на все hotelId/ratePlanId кандидатов (без N+1), затем кэш в память.
+ * Отдаёт детский конфиг отеля. В бою — batch-загрузка ОДНИМ запросом на все
+ * hotelId кандидатов (child_rates + hotels), затем кэш в памяти (без N+1).
  */
-interface ChildPricingConfig
+interface ChildConfig
 {
-    /** @return AgeBand[] бэнды отеля; если своих нет — платформенный дефолт (hotel_id IS NULL). */
-    public function ageBands(int $hotelId): array;
+    public function policy(int $hotelId): HotelChildPolicy;
 
-    /** @return array<int,ChildPrice> карта bandNo => ChildPrice для тарифа. */
-    public function childPrices(int $ratePlanId): array;
+    /**
+     * @return ChildRate[] ставки отеля (при наличии override на тариф —
+     *         уже отобранные под этот rate_plan/даты).
+     */
+    public function rates(int $hotelId, int $ratePlanId): array;
 }
 
 // ──────────────────────────────── логика ─────────────────────────────────
 
-/** Находит бэнд по возрасту (первый подходящий). null = возраст вне бэндов. */
-function bandForAge(int $age, array $bands): ?AgeBand
+/** Первый диапазон child_rates, покрывающий возраст. null = нет ставки. */
+function rateForAge(int $age, array $rates): ?ChildRate
 {
-    foreach ($bands as $b) {
-        if ($age >= $b->ageFrom && $age <= $b->ageTo) {
-            return $b;
+    foreach ($rates as $r) {
+        if ($age >= $r->ageFrom && $age <= $r->ageTo) {
+            return $r;
         }
     }
     return null;
@@ -102,90 +102,75 @@ function bandForAge(int $age, array $bands): ?AgeBand
 
 /**
  * Детская доплата за весь стей для одного тарифа.
- *
- * @return float|null  сумма доплаты, или NULL если тариф НЕ может продать
- *                      этим детям (нет правила и политика = Reject).
+ * @return float|null сумма доплаты, или NULL если тариф НЕ продаётся этим детям.
  */
 function childSurcharge(
     RateCandidate $c,
     GuestRequest $req,
-    array $bands,              // AgeBand[]
-    array $priceByBand,        // array<int,ChildPrice>
-    NoChildPricePolicy $policy = NoChildPricePolicy::Reject,
+    HotelChildPolicy $policy,
+    array $rates,                 // ChildRate[]
+    NoChildRatePolicy $fallback = NoChildRatePolicy::Reject,
 ): ?float {
     if ($req->childrenAges === []) {
-        return 0.0; // детей нет — доплаты нет
+        return 0.0;
+    }
+    if (!$policy->allowChildren) {
+        return null; // отель детей не принимает
     }
 
-    // Цена «взрослой ночи» = ночная цена размещения (для percent-детей).
-    $adultNightly = $c->adultTotal / max(1, $c->nights);
-
+    $adultNightly = $c->adultTotal / max(1, $c->nights); // ночь размещения (для percent)
     $sum = 0.0;
+
     foreach ($req->childrenAges as $age) {
-        $band = bandForAge($age, $bands);
-
-        // Возраст вне детских бэндов (или инфант-бэнд) — по политике.
-        if ($band === null || !$band->inPricing) {
-            if ($band !== null && !$band->inPricing) {
-                continue; // инфант в childrenAges по ошибке — бесплатно
-            }
-            // Возраст не покрыт бэндами отеля:
-            if ($policy === NoChildPricePolicy::AsAdult) {
-                $sum += $adultNightly; // считаем как доп. взрослого
-                continue;
-            }
-            return null; // Reject: тариф не продаём этим гостям
+        if ($age < $policy->minAge) {
+            return null; // возраст ниже допустимого политикой -> тариф не продаём
         }
 
-        $price = $priceByBand[$band->bandNo] ?? null;
-
-        // ОТЕЛЬ НЕ ВЕРНУЛ ЦЕНУ НА РЕБЁНКА ЭТОГО ВОЗРАСТА:
-        if ($price === null) {
-            if ($policy === NoChildPricePolicy::AsAdult) {
-                $sum += $adultNightly;
+        $rate = rateForAge($age, $rates);
+        if ($rate === null) {
+            // НЕТ детской ставки на этот возраст:
+            if ($fallback === NoChildRatePolicy::AsAdult) {
+                $sum += $adultNightly * $c->nights;
                 continue;
             }
-            return null; // Reject (дефолт): исключаем тариф целиком
+            return null; // Reject (дефолт): исключаем тариф
         }
 
-        $sum += match ($price->chargeType) {
+        $sum += match ($rate->chargeType) {
             'free'    => 0.0,
-            'fixed'   => $price->value * $c->nights,                         // сумма за ребёнка/ночь
-            'percent' => $adultNightly * ($price->value / 100.0) * $c->nights, // % от взрослой ночи
-            default   => throw new \RuntimeException("bad charge_type: {$price->chargeType}"),
+            'percent' => $adultNightly * ($rate->amount / 100.0) * $c->nights,
+            'fixed'   => $rate->unit === 'per_child_stay'
+                            ? $rate->amount
+                            : $rate->amount * $c->nights,
+            default   => throw new \RuntimeException("bad charge_type: {$rate->chargeType}"),
         };
     }
     return $sum;
 }
 
 /**
- * Главная функция: из кандидатов SQL оставляет по одному минимальному
- * варианту на отель — уже с учётом ВОЗРАСТА детей.
- *
+ * Из кандидатов SQL — по одному минимальному варианту на отель, с учётом
+ * возраста детей.
  * @param RateCandidate[] $candidates
  * @return array<int,array{price:float,ratePlanId:int,roomId:int,currency:string}>
- *         keyed by hotelId; отели без валидного тарифа для этих детей отсутствуют.
  */
 function minPricePerHotel(
     array $candidates,
     GuestRequest $req,
-    ChildPricingConfig $cfg,
-    NoChildPricePolicy $policy = NoChildPricePolicy::Reject,
+    ChildConfig $cfg,
+    NoChildRatePolicy $fallback = NoChildRatePolicy::Reject,
 ): array {
     $best = [];
-
     foreach ($candidates as $c) {
-        $bands       = $cfg->ageBands($c->hotelId);       // пер-отельные (+ дефолт)
-        $priceByBand = $cfg->childPrices($c->ratePlanId); // bandNo => ChildPrice
+        $policy = $cfg->policy($c->hotelId);
+        $rates  = $cfg->rates($c->hotelId, $c->ratePlanId);
 
-        $child = childSurcharge($c, $req, $bands, $priceByBand, $policy);
+        $child = childSurcharge($c, $req, $policy, $rates, $fallback);
         if ($child === null) {
-            continue; // тариф не продаёт этим детям — пропускаем
+            continue; // тариф не продаётся этим детям
         }
-
         $full = $c->adultTotal + $child;
 
-        // минимум по отелю (детская доплата могла поменять, какой тариф дешевле)
         if (!isset($best[$c->hotelId]) || $full < $best[$c->hotelId]['price']) {
             $best[$c->hotelId] = [
                 'price'      => round($full, 2),
@@ -195,59 +180,41 @@ function minPricePerHotel(
             ];
         }
     }
-
     return $best;
 }
 
 // ──────────────────────────────── пример ─────────────────────────────────
 
-// Конфиг-заглушка (в бою — batch из child_age_bands / child_prices).
-$cfg = new class implements ChildPricingConfig {
-    public function ageBands(int $hotelId): array {
-        // Пер-отельные бэнды; здесь один набор для примера.
-        return [
-            new AgeBand(1, 0,  1,  false), // инфант — бесплатно
-            new AgeBand(2, 2,  6,  true),
-            new AgeBand(3, 7,  12, true),
-            new AgeBand(4, 13, 17, true),
-        ];
+// Конфиг как на скринах Booking: 0-5 бесплатно, 6-10 = 100/ночь.
+$cfg = new class implements ChildConfig {
+    public function policy(int $hotelId): HotelChildPolicy {
+        return new HotelChildPolicy(allowChildren: true, minAge: 0); // "Any"
     }
-    public function childPrices(int $ratePlanId): array {
-        // Тариф 111: есть цены на 2-6 и 7-12, но НЕ на 13-17 (подростков не тарифицирует).
-        // Тариф 222: только фикс за любого ребёнка 2-12; тоже без подростков.
-        return match ($ratePlanId) {
-            111 => [2 => new ChildPrice('percent', 50), 3 => new ChildPrice('percent', 75)],
-            222 => [2 => new ChildPrice('fixed', 20),   3 => new ChildPrice('fixed', 20)],
-            default => [],
-        };
+    public function rates(int $hotelId, int $ratePlanId): array {
+        return [
+            new ChildRate(0, 5,  'free',  0,   'per_child_night'),   // 0-5 бесплатно
+            new ChildRate(6, 10, 'fixed', 100, 'per_child_night'),   // 6-10 = 100/ночь
+            // 11-17 не заданы -> дети этого возраста => тариф исключается (Reject)
+        ];
     }
 };
 
-// Запрос: 2 взрослых + дети 6 и 8, 3 ночи.
-$req = new GuestRequest(adults: 2, childrenAges: [6, 8], infants: 0, nights: 3);
+// Запрос: 2 взрослых + дети 3 и 8, 3 ночи.
+$req = new GuestRequest(adults: 2, childrenAges: [3, 8], nights: 3);
 
-// Кандидаты «из SQL» (adult_total = база по взрослым за 3 ночи):
 $candidates = [
-    new RateCandidate(hotelId: 500, roomId: 4500, ratePlanId: 111, currency: 'EUR', adultTotal: 300.0, nights: 3),
-    new RateCandidate(hotelId: 500, roomId: 4500, ratePlanId: 222, currency: 'EUR', adultTotal: 330.0, nights: 3),
-    new RateCandidate(hotelId: 700, roomId: 6500, ratePlanId: 111, currency: 'EUR', adultTotal: 280.0, nights: 3),
+    new RateCandidate(500, 4500, 111, 'INR', adultTotal: 3000.0, nights: 3),
+    new RateCandidate(700, 6500, 111, 'INR', adultTotal: 2800.0, nights: 3),
 ];
 
-$result = minPricePerHotel($candidates, $req, $cfg);
-print_r($result);
+print_r(minPricePerHotel($candidates, $req, $cfg));
 /*
-Ожидаемо:
-  Отель 500:
-    тариф 111: adultNightly=100; ребёнок 6 -> 50% =50/ночь, ребёнок 8 -> 75% =75/ночь
-               доплата=(50+75)*3=375; полная=300+375=675
-    тариф 222: fixed 20/реб/ночь ×2 ×3 =120; полная=330+120=450  <-- дешевле
-    => min 450 (rate 222)
-  Отель 700:
-    тариф 111: adultNightly=280/3≈93.33; дети 6,8 -> (46.67+70.0)*3≈350
-               полная=280+350=630
-    => min 630 (rate 111)
+Ребёнок 3 -> 0-5 free -> 0
+Ребёнок 8 -> 6-10 fixed 100/ночь -> 100*3 = 300
+Отель 500: 3000 + 300 = 3300
+Отель 700: 2800 + 300 = 3100
+=> [500 => 3300, 700 => 3100]
 
-Если бы запрос был с ребёнком 15 (подросток) и политика Reject:
-  ни у 111, ни у 222 нет цены на бэнд 13-17 -> оба тарифа исключены ->
-  отели без других тарифов НЕ попадают в результат.
+Если бы был ребёнок 12 (нет ставки, Reject): оба тарифа исключены,
+отели без других тарифов исчезают из выдачи.
 */

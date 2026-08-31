@@ -57,6 +57,9 @@ CREATE TABLE hotels (
   vat_included   TINYINT(1)   NOT NULL DEFAULT 1,  -- НДС уже в цене тарифа?
   fee_policy_id  INT UNSIGNED NULL,           -- политика сборов (fee_policies)
   fee_included   TINYINT(1)   NOT NULL DEFAULT 0,  -- сборы уже в цене тарифа?
+  -- ДЕТСКАЯ ПОЛИТИКА уровня отеля (как Booking «Child policies») ------
+  allow_children    TINYINT(1) NOT NULL DEFAULT 1,  -- принимает ли детей вообще
+  children_min_age  TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- допускаются с этого возраста (0=Any)
   status         ENUM('active','inactive','draft') NOT NULL DEFAULT 'draft',
   created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -261,9 +264,9 @@ CREATE TABLE access_codes (
 --    Цена делится на ДВЕ части:
 --      (1) База по ВЗРОСЛЫМ — occupancy_options + rate_prices, попадает в
 --          search_daily (ключ occupancy_id = число взрослых). Быстрый скан.
---      (2) Детская доплата ПО ВОЗРАСТУ — компактный ПЕР-ОТЕЛЬНЫЙ конфиг
---          (child_age_bands + child_prices). В горячий скан НЕ входит;
---          PHP считает её на наборе кандидатов под точные возрасты детей.
+--      (2) Детская доплата ПО ВОЗРАСТУ — конфиг УРОВНЯ ОТЕЛЯ (child_rates,
+--          как Booking «Child rates»). В горячий скан НЕ входит; PHP считает
+--          её на наборе кандидатов под точные возрасты детей.
 --    Так возрасты остаются пер-отельными и точными, а кэш — лёгким.
 -- ---------------------------------------------------------------------
 
@@ -278,35 +281,32 @@ CREATE TABLE occupancy_options (
   UNIQUE KEY uq_occ (room_id, adults)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ПЕР-ОТЕЛЬНЫЕ возрастные группы. hotel_id = NULL -> платформенный дефолт
--- (fallback, если у отеля своих бэндов нет). in_pricing=0 -> инфант
--- (бесплатно, вне вместимости-оплаты; вместимость через room.max_infants).
-CREATE TABLE child_age_bands (
-  id        INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  hotel_id  INT UNSIGNED NULL,           -- NULL = глобальный дефолт
-  band_no   TINYINT UNSIGNED NOT NULL,   -- 1..N (порядок), для ссылки из child_prices
-  name      VARCHAR(60) NOT NULL,        -- «Child 2-11», «Teen 12-17»
-  age_from  TINYINT UNSIGNED NOT NULL,   -- включительно
-  age_to    TINYINT UNSIGNED NOT NULL,   -- включительно
-  in_pricing TINYINT(1) NOT NULL DEFAULT 1,  -- 0 = инфант/бесплатно
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_band (hotel_id, band_no),
-  KEY idx_band_hotel (hotel_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Детская цена по бэнду и периоду (пер-отельно, привязка к тарифу).
--- charge_type: free / percent (% от взрослой ночи) / fixed (сумма за ребёнка/ночь).
--- PHP берёт возраст ребёнка -> бэнд отеля -> строку child_prices -> доплата.
-CREATE TABLE child_prices (
+-- ДЕТСКИЕ СТАВКИ УРОВНЯ ОТЕЛЯ (как Booking «Child rates»).
+-- Одна строка = один возрастной диапазон + его цена. Произвольное число
+-- диапазонов в пределах 0-17 (непересекающихся; валидирует UI/PHP).
+-- Применяются к номерам, где задан child occupancy (room.max_children > 0).
+--   charge_type: free / percent (% от взрослой ночи) / fixed (сумма).
+--   charge_unit: за ребёнка за ночь / за ребёнка за стей (для fixed).
+-- Инфанты моделируются просто диапазоном 0-1 с charge_type='free'.
+--
+-- ПЕР-ОТЕЛЬНО по умолчанию (rate_plan_id = NULL). Опциональный override
+-- на конкретный тариф/период (напр. детский завтрак дороже на BB) —
+-- строка с rate_plan_id != NULL: она перекрывает отельную для этого тарифа.
+CREATE TABLE child_rates (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  rate_plan_id  INT UNSIGNED NOT NULL,   -- питание влияет -> привязка к тарифу
-  band_no       TINYINT UNSIGNED NOT NULL,  -- ссылка на child_age_bands.band_no отеля
-  date_from     DATE NOT NULL,
-  date_to       DATE NOT NULL,
+  hotel_id      INT UNSIGNED NOT NULL,
+  rate_plan_id  INT UNSIGNED NULL,          -- NULL = на весь отель; иначе override тарифа
+  age_from      TINYINT UNSIGNED NOT NULL,  -- включительно
+  age_to        TINYINT UNSIGNED NOT NULL,  -- включительно
   charge_type   ENUM('free','percent','fixed') NOT NULL,
-  value         DECIMAL(10,2) NOT NULL DEFAULT 0,  -- percent: 50.00=50%; fixed: сумма/ночь
+  amount        DECIMAL(10,2) NOT NULL DEFAULT 0,  -- percent: 50.00=50%; fixed: сумма
+  charge_unit   ENUM('per_child_night','per_child_stay') NOT NULL DEFAULT 'per_child_night',
+  -- опциональное окно действия (для сезонных детских цен); NULL = всегда
+  date_from     DATE NULL,
+  date_to       DATE NULL,
+  sort          SMALLINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
-  KEY idx_childprice (rate_plan_id, band_no, date_from, date_to)
+  KEY idx_childrate_hotel (hotel_id, rate_plan_id, age_from, age_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------

@@ -12,14 +12,11 @@ INSERT INTO room_views (id, code, name) VALUES
   (4, 'lake',     'Lake view'),
   (5, 'mountain', 'Mountain view');   -- в тз было дублем 'lake'; уточнить
 
--- ПЛАТФОРМЕННЫЙ ДЕФОЛТ возрастных групп (hotel_id = NULL). Отель может
--- задать свои строки child_age_bands с своим hotel_id и границами.
--- in_pricing=0 -> инфант (бесплатно; вместимость через room.max_infants).
-INSERT INTO child_age_bands (hotel_id, band_no, name, age_from, age_to, in_pricing) VALUES
-  (NULL, 1, 'Infant 0-1',  0,  1, 0),
-  (NULL, 2, 'Child 2-6',   2,  6, 1),
-  (NULL, 3, 'Child 7-12',  7, 12, 1),
-  (NULL, 4, 'Teen 13-17', 13, 17, 1);
+-- Детские ставки (child_rates) задаются ПЕР-ОТЕЛЬНО в Extranet, не сидом.
+-- Пример для отеля 1 (как на скринах Booking): 0-5 бесплатно, 6-10 = 100/ночь.
+--   INSERT INTO child_rates (hotel_id, age_from, age_to, charge_type, amount, charge_unit)
+--   VALUES (1, 0, 5, 'free', 0, 'per_child_night'),
+--          (1, 6,10, 'fixed', 100, 'per_child_night');
 -- Возраст >= 18 считается взрослым (adults).
 
 -- Типы кроватей (room_space_beds.bed_type_id)

@@ -264,8 +264,8 @@ HAVING COUNT(*) = :nights
 ORDER BY total_raw_price ASC;
 -- total_raw_price здесь = БАЗА по взрослым за период (нетто, без детей).
 -- PHP далее на этих строках:
---   1) ДЕТСКАЯ доплата по возрасту: возраст ребёнка -> child_age_bands отеля
---      -> child_prices(rate_plan, band, период) -> +сумма за ночи;
+--   1) ДЕТСКАЯ доплата по возрасту: возраст ребёнка -> child_rates отеля
+--      (диапазон age_from..age_to) -> free/percent/fixed -> +сумма за ночи;
 --   2) налоги/сборы (hotels.vat_policy_id/fee_policy_id), опц. extras, наценка,
 --      валюта, штраф отмены (cancellation_rules).
 -- Итоговая цена = база(взрослые) + дети(по возрасту) + сборы. Затем MIN по отелю.
