@@ -12,6 +12,16 @@ INSERT INTO room_views (id, code, name) VALUES
   (4, 'lake',     'Lake view'),
   (5, 'mountain', 'Mountain view');   -- в тз было дублем 'lake'; уточнить
 
+-- Глобальные возрастные группы (child_age_bands).
+-- Инфанты (in_occupancy=0) не тарифицируются и не входят в occ_key.
+-- Позиции b1,b2,b3 в occ_key = тарифицируемые бэнды по порядку (young,child,teen).
+INSERT INTO child_age_bands (id, code, name, age_from, age_to, in_occupancy) VALUES
+  (1, 'infant', 'Infant 0-1',      0,  1, 0),   -- отдельно: room.max_infants
+  (2, 'young',  'Child 2-6',       2,  6, 1),   -- occ_key b1
+  (3, 'child',  'Child 7-12',      7, 12, 1),   -- occ_key b2
+  (4, 'teen',   'Teen 13-17',     13, 17, 1);   -- occ_key b3
+-- Возраст >= 18 считается взрослым (adults).
+
 -- Типы кроватей (room_space_beds.bed_type_id)
 INSERT INTO bed_types (code, name, sleeps) VALUES
   ('single', 'Single bed',       1),

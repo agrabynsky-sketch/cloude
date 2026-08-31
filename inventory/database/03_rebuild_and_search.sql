@@ -32,7 +32,7 @@ INSERT INTO search_daily
    channel_mask, visibility, access_group_id)
 SELECT
    rp.hotel_id, h.city_id, h.country_id, rp.room_id, rp.id, rp.board_type_id,
-   (o.adults*100 + o.children), o.adults, o.children,   -- occupancy_id = глоб. ключ
+   o.occ_key, o.adults, o.children,   -- occupancy_id = глоб. подпись (взр + бэнды детей)
    rt.max_infants, rp.is_refundable, cal.d,
    pr.price + IFNULL(mext.per_night_sum,0)      AS price,
    rp.currency,
@@ -93,7 +93,10 @@ WHERE cal.d BETWEEN :from AND :to;
 --  Вход из PHP:
 --    :checkin  — дата заезда
 --    :checkout — дата выезда  (ночей = DATEDIFF(:checkout,:checkin) = :nights)
---    :occ      — глобальный ключ размещения = adults*100 + children
+--    :occ      — глоб. подпись размещения occ_key = adults*1000 + b1*100
+--                + b2*10 + b3, где b1..b3 — число детей в каждом возрастном
+--                бэнде. PHP: возраст ребёнка -> child_age_bands -> счётчики.
+--                Пример: 2 взр + дети 6 и 8 -> b1(2-6)=1, b2(7-12)=1 -> 2110.
 --    :rooms    — сколько номеров нужно (обычно 1)
 --    :channel  — бит канала (напр. 1 = web B2C, 2 = b2b, ...)
 --    :hotels   — список hotel_id (или используйте city_id вариант)

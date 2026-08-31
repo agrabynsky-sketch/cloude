@@ -257,19 +257,46 @@ CREATE TABLE access_codes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 4. РАЗМЕЩЕНИЕ (occupancy) — какие комбинации гостей продаём
---    и по какой базовой цене. Ключевая сущность для цены за ночь.
---    Малое число вариантов на категорию (обычно 3-10).
+-- 4. ВОЗРАСТ ДЕТЕЙ И РАЗМЕЩЕНИЕ (occupancy)
+--    Цена зависит от ВОЗРАСТА детей. Чтобы быстрый поиск сотен отелей
+--    работал одним :occ, возрастные группы — ГЛОБАЛЬНЫЕ (платформенные).
+--    Детские политики отелей/контрактов маппятся в эти группы при
+--    загрузке (PHP). Запрос «дети 6 и 8» -> одинаковые бэнды во всех
+--    отелях -> один occ_key.
 -- ---------------------------------------------------------------------
 
+-- Глобальные возрастные группы Unit.Travel (порядок = позиция в occ_key).
+-- Инфанты (0-1) обрабатываются отдельно (room.max_infants), в occ не входят.
+CREATE TABLE child_age_bands (
+  id        TINYINT UNSIGNED NOT NULL,   -- 1..N; 0 зарезервирован под взрослых
+  code      VARCHAR(24) NOT NULL,        -- 'infant','young','child','teen'
+  name      VARCHAR(60) NOT NULL,
+  age_from  TINYINT UNSIGNED NOT NULL,   -- включительно
+  age_to    TINYINT UNSIGNED NOT NULL,   -- включительно
+  in_occupancy TINYINT(1) NOT NULL DEFAULT 1,  -- 0 = не тарифицируется (инфант)
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_band_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Размещения, которые продаёт категория: взрослые + СОСТАВ ДЕТЕЙ ПО БЭНДАМ.
+-- occ_key — стабильная ГЛОБАЛЬНАЯ подпись размещения (одинакова во всех
+-- отелях), её же хранит search_daily.occupancy_id. Кодировка (пример на
+-- 3 тарифицируемых бэнда): adults*1000 + b1*100 + b2*10 + b3.
+-- Число тарифицируемых бэндов фиксировано платформой; при желании расширить —
+-- увеличить разрядность occ_key и число колонок band_qty*.
 CREATE TABLE occupancy_options (
   id            SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  room_id  INT UNSIGNED NOT NULL,
+  room_id       INT UNSIGNED NOT NULL,
   adults        TINYINT UNSIGNED NOT NULL,
-  children      TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  label         VARCHAR(40) NULL,        -- «2 взр», «2 взр + 1 реб»
+  band1_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- детей в бэнде 1 (напр. 2-6)
+  band2_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- бэнд 2 (напр. 7-12)
+  band3_qty     TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- бэнд 3 (напр. 13-17)
+  children      TINYINT UNSIGNED NOT NULL DEFAULT 0,  -- всего детей (= b1+b2+b3, для вывода)
+  occ_key       INT UNSIGNED NOT NULL,                -- adults*1000 + b1*100 + b2*10 + b3
+  label         VARCHAR(60) NULL,        -- «2 взр + реб 2-6 + реб 7-12»
   PRIMARY KEY (id),
-  UNIQUE KEY uq_occ (room_id, adults, children)
+  UNIQUE KEY uq_occ (room_id, occ_key),
+  KEY idx_occ_key (occ_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
