@@ -1,0 +1,595 @@
+openapi: 3.0.3
+
+info:
+  title: Unit.Travel Partner Inventory API
+  version: "1.0.0"
+  description: >
+    Integration API of the Unit.Travel inventory system for PMS and Channel
+    Managers (e.g. PMS Servio, Channel Manager YieldPlanet).
+
+    ARI model (Availability, Rates, Inventory): the partner (PMS/CM) PUSHES
+    availability, rates and restriction updates to Unit.Travel; Unit.Travel
+    returns reservations back (pull via `/reservations` or push via webhook).
+
+    Core principles:
+      * Idempotency — every ARI message carries a `message_uid` unique within
+        the connection; resending the same `message_uid` is not applied twice,
+        the original result is returned instead.
+      * Ordering / last-write-wins — each element carries a `revision`
+        (source-side monotonic counter/timestamp); an update is applied only
+        if its `revision` is not older than the stored one.
+      * Asynchronous — the ARI intake replies `202 Accepted`; processing status
+        is polled via `GET /ari/messages/{message_uid}`.
+      * Codes — the partner uses its OWN room/rate codes; the correspondence to
+        our ids is set once via `/mappings`.
+  contact:
+    name: Unit.Travel Integrations
+    email: integrations@unit.travel
+
+servers:
+  - url: https://api.sandbox.unit.travel/partner/v1
+    description: Sandbox (test environment)
+  - url: https://api.unit.travel/partner/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: System
+    description: Availability check
+  - name: Onboarding
+    description: Room/rate catalog and code mapping
+  - name: ARI
+    description: Availability, rates and restrictions intake (partner → Unit.Travel)
+  - name: Reservations
+    description: Reservation delivery (Unit.Travel → partner)
+
+paths:
+
+  /ping:
+    get:
+      tags: [System]
+      summary: Health-check and token validation
+      responses:
+        "200":
+          description: Service is up, token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  server_time: { type: string, format: date-time }
+                  connection_id: { type: integer, example: 42 }
+
+  /properties/{property_id}/rooms:
+    get:
+      tags: [Onboarding]
+      summary: Unit.Travel room categories catalog (for mapping)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of room categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Room' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rate-plans:
+    get:
+      tags: [Onboarding]
+      summary: Unit.Travel rate plans catalog (for mapping)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of rate plans
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RatePlan' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/mappings:
+    get:
+      tags: [Onboarding]
+      summary: Current mapping of partner external codes to our ids
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of mappings
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mapping' }
+    put:
+      tags: [Onboarding]
+      summary: Set/update code mappings (idempotent upsert)
+      description: >
+        The partner submits the correspondence of ITS room/rate codes to our
+        `room_id` / `rate_plan_id`. Required before sending ARI: ARI elements
+        with an unknown code will be rejected.
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Mapping' }
+      responses:
+        "200":
+          description: Mappings saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /ari:
+    post:
+      tags: [ARI]
+      summary: ARI update intake (availability + rates + restrictions)
+      description: >
+        Single batch message. Idempotent by `message_uid`. Replies
+        `202 Accepted`; the actual apply is asynchronous, poll status via
+        `GET /ari/messages/{message_uid}`.
+
+        Any of the `availability` / `rates` / `restrictions` arrays may be
+        sent (at least one non-empty).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AriMessage' }
+            examples:
+              full:
+                $ref: '#/components/examples/AriFull'
+      responses:
+        "202":
+          description: Message accepted for processing
+          headers:
+            Location:
+              description: URL to poll the status
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriAccepted' }
+        "200":
+          description: >
+            Replay with an already-seen `message_uid` — the previous result is
+            returned without re-applying (idempotency).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriMessageStatus' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "422": { $ref: '#/components/responses/Unprocessable' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+
+  /ari/messages/{message_uid}:
+    get:
+      tags: [ARI]
+      summary: ARI message processing status
+      parameters:
+        - name: message_uid
+          in: path
+          required: true
+          schema: { type: string, maxLength: 120 }
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriMessageStatus' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /reservations:
+    get:
+      tags: [Reservations]
+      summary: Deliver new/modified/cancelled reservations (pull)
+      description: >
+        For PMS/CM that fetch reservations by polling. Paginated by cursor.
+        Alternative — webhook (see README and `ReservationEvent`).
+      parameters:
+        - $ref: '#/components/parameters/PropertyId2'
+        - name: since
+          in: query
+          description: Return reservations changed since this moment (ISO 8601)
+          schema: { type: string, format: date-time }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, modified, cancelled]
+        - name: cursor
+          in: query
+          description: Next-page cursor (from the previous response)
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200":
+          description: A page of reservations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationList' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /reservations/{reservation_id}/acknowledge:
+    post:
+      tags: [Reservations]
+      summary: Acknowledge reservation receipt by the partner
+      description: >
+        After the reservation is loaded into the PMS/CM, acknowledge it so it
+        is not repeated in the pull feed. For webhooks a `200` reply is the
+        acknowledgement.
+      parameters:
+        - name: reservation_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        A bearer token (API key) is issued by Unit.Travel PER connection
+        (provider × property). Sent via the `Authorization: Bearer <token>`
+        header. Optionally — IP allowlist.
+
+  parameters:
+    PropertyId:
+      name: property_id
+      in: path
+      required: true
+      description: Property identifier in Unit.Travel
+      schema: { type: integer, format: int64 }
+    PropertyId2:
+      name: property_id
+      in: query
+      required: true
+      schema: { type: integer, format: int64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Optional duplicate of the body `message_uid` (if set, must match).
+        Provides idempotency at the transport level.
+      schema: { type: string, maxLength: 120 }
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Object not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadRequest:
+      description: Malformed request (structure/validation)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: >
+        Semantic error: unknown room/rate code, invalid date range, stale
+        `revision`, etc.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Request rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: unknown_rate_plan_code
+        message:
+          type: string
+          example: "rate_plan_code 'STD-BB' is not mapped for property 123"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string, example: "rates[3].rate_plan_code" }
+              reason: { type: string }
+
+    Ack:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+
+    Room:
+      type: object
+      description: Room category (unit of inventory/availability).
+      properties:
+        id: { type: integer, format: int64, example: 4500 }
+        code: { type: string, example: "DLX" }
+        name: { type: string, example: "Deluxe Room" }
+        max_adults: { type: integer, example: 3 }
+        max_children: { type: integer, example: 2 }
+        max_infants: { type: integer, example: 1 }
+        max_occupancy: { type: integer, example: 4 }
+
+    RatePlan:
+      type: object
+      properties:
+        id: { type: integer, format: int64, example: 13500 }
+        code: { type: string, example: "STD-BB-FLEX" }
+        name: { type: string, example: "Standard BB Flexible" }
+        room_id: { type: integer, format: int64, example: 4500 }
+        board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
+        currency: { type: string, example: "EUR" }
+        is_refundable: { type: boolean, example: true }
+
+    Mapping:
+      type: object
+      required: [entity_type, external_code, internal_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [room, rate_plan]
+        external_code:
+          type: string
+          description: Code on the partner (PMS/CM) side
+          example: "SRV-ROOM-01"
+        internal_id:
+          type: integer
+          format: int64
+          description: Room/rate id in Unit.Travel
+          example: 4500
+
+    AriMessage:
+      type: object
+      required: [message_uid, property_id]
+      properties:
+        message_uid:
+          type: string
+          maxLength: 120
+          description: Message id unique within the connection (idempotency)
+          example: "srv-2026-07-01T10:00:00-abc123"
+        revision:
+          type: integer
+          format: int64
+          description: >
+            Source-side monotonic counter/timestamp for last-write-wins.
+            Applied only if not older than the stored one.
+          example: 1719827400
+        property_id:
+          type: integer
+          format: int64
+          example: 123
+        availability:
+          type: array
+          items: { $ref: '#/components/schemas/AvailabilityItem' }
+        rates:
+          type: array
+          items: { $ref: '#/components/schemas/RateItem' }
+        restrictions:
+          type: array
+          items: { $ref: '#/components/schemas/RestrictionItem' }
+
+    AvailabilityItem:
+      type: object
+      required: [room_code, date_from, date_to, units]
+      description: >
+        Availability ("rooms to sell") for a room category. Stored as an
+        allotment; effective availability = units − our confirmed bookings.
+      properties:
+        room_code: { type: string, description: external room code, example: "SRV-ROOM-01" }
+        date_from: { type: string, format: date, example: "2026-07-01" }
+        date_to:   { type: string, format: date, description: inclusive, example: "2026-07-31" }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        units:
+          type: integer
+          minimum: 0
+          description: Number of rooms to sell
+          example: 5
+        closed:
+          type: boolean
+          description: Full stop-sell for the category (overrides units)
+          default: false
+
+    RateItem:
+      type: object
+      required: [rate_plan_code, date_from, date_to, price, currency]
+      description: >
+        Price of the BASE adult occupancy. Child prices are configured
+        separately (Child rates) and are NOT sent over ARI.
+      properties:
+        rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+        occupancy:
+          type: integer
+          description: >
+            Number of adults the price applies to. If omitted — applies to the
+            rate plan's standard occupancy.
+          example: 2
+        date_from: { type: string, format: date }
+        date_to:   { type: string, format: date, description: inclusive }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        price:
+          type: number
+          format: double
+          description: Price per night (net, excluding taxes/fees)
+          example: 120.00
+        currency: { type: string, example: "EUR" }
+
+    RestrictionItem:
+      type: object
+      required: [rate_plan_code, date_from, date_to]
+      properties:
+        rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+        date_from: { type: string, format: date }
+        date_to:   { type: string, format: date, description: inclusive }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        min_stay: { type: integer, minimum: 1, example: 2 }
+        max_stay: { type: integer, description: "0 = no limit", example: 0 }
+        closed_to_arrival:   { type: boolean, default: false }
+        closed_to_departure: { type: boolean, default: false }
+        stop_sell:           { type: boolean, default: false }
+        min_advance_days:    { type: integer, minimum: 0, example: 0 }
+        max_advance_days:    { type: integer, minimum: 0, description: "0 = none", example: 0 }
+        release_days:        { type: integer, minimum: 0, example: 0 }
+
+    DaysOfWeek:
+      type: array
+      description: >
+        Days of week the element applies to. If omitted — all days.
+      items:
+        type: string
+        enum: [MON, TUE, WED, THU, FRI, SAT, SUN]
+      example: [MON, TUE, WED, THU, FRI]
+
+    AriAccepted:
+      type: object
+      properties:
+        message_uid: { type: string }
+        status: { type: string, enum: [received], example: received }
+        received_at: { type: string, format: date-time }
+
+    AriMessageStatus:
+      type: object
+      properties:
+        message_uid: { type: string }
+        status:
+          type: string
+          enum: [received, processing, applied, failed, skipped]
+        received_at: { type: string, format: date-time }
+        processed_at: { type: string, format: date-time, nullable: true }
+        applied_items: { type: integer, example: 62 }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/Error' }
+
+    ReservationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Reservation' }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Next-page cursor; null — no more data
+
+    Reservation:
+      type: object
+      properties:
+        reservation_id: { type: string, example: "UT-9F3A21" }
+        property_id: { type: integer, format: int64, example: 123 }
+        status:
+          type: string
+          enum: [new, modified, cancelled]
+        created_at: { type: string, format: date-time }
+        modified_at: { type: string, format: date-time }
+        checkin: { type: string, format: date }
+        checkout: { type: string, format: date }
+        currency: { type: string, example: "EUR" }
+        total_price: { type: number, format: double, example: 675.00 }
+        channel: { type: string, example: "web" }
+        rooms:
+          type: array
+          items:
+            type: object
+            properties:
+              room_code: { type: string, description: external code (after mapping), example: "SRV-ROOM-01" }
+              rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+              occupancy:
+                type: object
+                properties:
+                  adults: { type: integer, example: 2 }
+                  children_ages:
+                    type: array
+                    items: { type: integer }
+                    example: [6, 8]
+                  infants: { type: integer, example: 0 }
+              price: { type: number, format: double, example: 675.00 }
+        guest:
+          type: object
+          properties:
+            first_name: { type: string }
+            last_name: { type: string }
+            email: { type: string, format: email }
+            country: { type: string, example: "UA" }
+
+    ReservationEvent:
+      type: object
+      description: >
+        Webhook notification body (Unit.Travel → partner endpoint). Signed with
+        the `X-UnitTravel-Signature` header (HMAC-SHA256).
+      properties:
+        event:
+          type: string
+          enum: [reservation.created, reservation.modified, reservation.cancelled]
+        occurred_at: { type: string, format: date-time }
+        reservation: { $ref: '#/components/schemas/Reservation' }
+
+  examples:
+    AriFull:
+      summary: Availability + rates + restrictions in one message
+      value:
+        message_uid: "yp-2026-07-01T10:00:00Z-000187"
+        revision: 1719827400
+        property_id: 123
+        availability:
+          - room_code: "YP-DLX"
+            date_from: "2026-07-01"
+            date_to: "2026-07-31"
+            units: 5
+        rates:
+          - rate_plan_code: "YP-DLX-BB"
+            occupancy: 2
+            date_from: "2026-07-01"
+            date_to: "2026-07-31"
+            price: 120.00
+            currency: "EUR"
+        restrictions:
+          - rate_plan_code: "YP-DLX-BB"
+            date_from: "2026-07-01"
+            date_to: "2026-07-14"
+            min_stay: 2
+            closed_to_arrival: true
