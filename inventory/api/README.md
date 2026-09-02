@@ -3,18 +3,24 @@
 Спецификация API интеграции с PMS и Channel Manager (Servio, YieldPlanet и др.).
 API integration spec for PMS and Channel Managers (Servio, YieldPlanet, etc.).
 
-| | 🇷🇺 Русский | 🇬🇧 English |
-|---|-----------|-----------|
-| Guide | [`README.ru.md`](./README.ru.md) | [`README.en.md`](./README.en.md) |
-| OpenAPI 3.0 | [`openapi.ru.yaml`](./openapi.ru.yaml) | [`openapi.en.yaml`](./openapi.en.yaml) |
+| | 🇷🇺 Русский | 🇬🇧 English | 🇺🇦 Українська |
+|---|-----------|-----------|--------------|
+| Guide | [`README.ru.md`](./README.ru.md) | [`README.en.md`](./README.en.md) | — |
+| OpenAPI 3.0 | [`openapi.ru.yaml`](./openapi.ru.yaml) | [`openapi.en.yaml`](./openapi.en.yaml) | [`openapi.uk.yaml`](./openapi.uk.yaml) |
 
-Обе версии идентичны по структуре (эндпоинты, схемы, коды) и отличаются только
-языком описаний. / Both versions are structurally identical (endpoints,
-schemas, codes) and differ only in description language.
+Все версии идентичны по структуре (эндпоинты, схемы, коды) и отличаются только
+языком описаний. / All versions are structurally identical and differ only in
+description language.
 
-Открыть спецификацию визуально: загрузите `openapi.*.yaml` в
-[Swagger Editor](https://editor.swagger.io) или Redoc. /
-To view visually: load `openapi.*.yaml` into Swagger Editor or Redoc.
+## 📘 Готовый dev-portal (один HTML-файл) / Ready dev portal (single HTML)
+
+**[`dist/index.html`](./dist/index.html)** — self-contained страница Redoc с
+переключателем **RU / EN / UK**, Redoc встроен внутрь → работает **офлайн**,
+без CDN. Это файл для пересылки партнёрам (Servio, YieldPlanet).
+
+Пересобрать / rebuild: `python3 build_portal.py` (читает три `openapi.*.yaml`
+и `vendor/redoc.standalone.js`). Также спеку можно открыть в
+[Swagger Editor](https://editor.swagger.io).
 
 ## API methods / Методы API
 

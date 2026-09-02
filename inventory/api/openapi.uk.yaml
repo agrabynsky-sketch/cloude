@@ -1,0 +1,594 @@
+openapi: 3.0.3
+
+info:
+  title: Unit.Travel Partner Inventory API
+  version: "1.0.0"
+  description: >
+    API інтеграції інвенторної системи Unit.Travel з PMS та Channel Manager
+    (напр. PMS Servio, Channel Manager YieldPlanet).
+
+    Модель ARI (Availability, Rates, Inventory): партнер (PMS/CM) НАДСИЛАЄ
+    оновлення наявності, цін та обмежень до Unit.Travel; Unit.Travel повертає
+    бронювання назад (pull через `/reservations` або push через webhook).
+
+    Основні принципи:
+      * Ідемпотентність — кожне ARI-повідомлення має `message_uid`, унікальний
+        у межах підключення; повтор з тим самим `message_uid` не застосовується
+        повторно, а повертає початковий результат.
+      * Порядок / last-write-wins — кожен елемент має `revision` (монотонний
+        лічильник/мітка часу джерела); оновлення застосовується лише якщо
+        `revision` не старіший за збережений.
+      * Асинхронність — приймання ARI відповідає `202 Accepted`; статус обробки
+        опитується через `GET /ari/messages/{message_uid}`.
+      * Коди — партнер оперує СВОЇМИ кодами номерів/тарифів; відповідність нашим
+        id задається один раз через `/mappings`.
+  contact:
+    name: Unit.Travel Integrations
+    email: integrations@unit.travel
+
+servers:
+  - url: https://api.sandbox.unit.travel/partner/v1
+    description: Sandbox (тестове середовище)
+  - url: https://api.unit.travel/partner/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: System
+    description: Перевірка доступності
+  - name: Onboarding
+    description: Каталог номерів/тарифів та маппінг кодів
+  - name: ARI
+    description: Приймання наявності, цін та обмежень (партнер → Unit.Travel)
+  - name: Reservations
+    description: Видача бронювань (Unit.Travel → партнер)
+
+paths:
+
+  /ping:
+    get:
+      tags: [System]
+      summary: Health-check та перевірка авторизації
+      responses:
+        "200":
+          description: Сервіс доступний, токен дійсний
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  server_time: { type: string, format: date-time }
+                  connection_id: { type: integer, example: 42 }
+
+  /properties/{property_id}/rooms:
+    get:
+      tags: [Onboarding]
+      summary: Каталог категорій номерів Unit.Travel (для маппінгу)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список категорій
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Room' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rate-plans:
+    get:
+      tags: [Onboarding]
+      summary: Каталог тарифних планів Unit.Travel (для маппінгу)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список тарифів
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RatePlan' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/mappings:
+    get:
+      tags: [Onboarding]
+      summary: Поточні відповідності зовнішніх кодів партнера нашим id
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список маппінгів
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mapping' }
+    put:
+      tags: [Onboarding]
+      summary: Задати/оновити відповідності кодів (idempotent upsert)
+      description: >
+        Партнер надсилає відповідність СВОЇХ кодів номерів/тарифів нашим
+        `room_id` / `rate_plan_id`. Потрібно до надсилання ARI: елементи ARI з
+        невідомим кодом будуть відхилені.
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Mapping' }
+      responses:
+        "200":
+          description: Маппінги збережено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /ari:
+    post:
+      tags: [ARI]
+      summary: Приймання ARI-оновлення (наявність + ціни + обмеження)
+      description: >
+        Єдине batch-повідомлення. Ідемпотентне за `message_uid`. Відповідає
+        `202 Accepted`; фактичне застосування — асинхронне, статус через
+        `GET /ari/messages/{message_uid}`.
+
+        Можна надіслати будь-які з масивів `availability` / `rates` /
+        `restrictions` (щонайменше один непорожній).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AriMessage' }
+            examples:
+              full:
+                $ref: '#/components/examples/AriFull'
+      responses:
+        "202":
+          description: Повідомлення прийнято в обробку
+          headers:
+            Location:
+              description: URL для опитування статусу
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriAccepted' }
+        "200":
+          description: >
+            Повтор із вже баченим `message_uid` — повертається попередній
+            результат без повторного застосування (ідемпотентність).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriMessageStatus' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "422": { $ref: '#/components/responses/Unprocessable' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+
+  /ari/messages/{message_uid}:
+    get:
+      tags: [ARI]
+      summary: Статус обробки ARI-повідомлення
+      parameters:
+        - name: message_uid
+          in: path
+          required: true
+          schema: { type: string, maxLength: 120 }
+      responses:
+        "200":
+          description: Статус
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AriMessageStatus' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /reservations:
+    get:
+      tags: [Reservations]
+      summary: Видача нових/змінених/скасованих бронювань (pull)
+      description: >
+        Для PMS/CM, що забирають бронювання опитуванням. Посторінково, за
+        курсором. Альтернатива — webhook (див. README та `ReservationEvent`).
+      parameters:
+        - $ref: '#/components/parameters/PropertyId2'
+        - name: since
+          in: query
+          description: Повернути бронювання, змінені з цього моменту (ISO 8601)
+          schema: { type: string, format: date-time }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, modified, cancelled]
+        - name: cursor
+          in: query
+          description: Курсор наступної сторінки (з попередньої відповіді)
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        "200":
+          description: Сторінка бронювань
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReservationList' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /reservations/{reservation_id}/acknowledge:
+    post:
+      tags: [Reservations]
+      summary: Підтвердити приймання бронювання партнером
+      description: >
+        Після успішного завантаження бронювання в PMS/CM підтвердіть його, щоб
+        воно не повторювалося у pull-видачі. Для webhook підтвердженням є `200`.
+      parameters:
+        - name: reservation_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Підтверджено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer-токен (API-ключ) видається Unit.Travel на КОЖНЕ підключення
+        (пара провайдер×об'єкт). Передається заголовком
+        `Authorization: Bearer <token>`. Опційно — IP-allowlist.
+
+  parameters:
+    PropertyId:
+      name: property_id
+      in: path
+      required: true
+      description: Ідентифікатор об'єкта розміщення в Unit.Travel
+      schema: { type: integer, format: int64 }
+    PropertyId2:
+      name: property_id
+      in: query
+      required: true
+      schema: { type: integer, format: int64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Необов'язковий дубль `message_uid` з тіла (якщо задано — має
+        збігатися). Забезпечує ідемпотентність на рівні транспорту.
+      schema: { type: string, maxLength: 120 }
+
+  responses:
+    Unauthorized:
+      description: Відсутній/невірний токен
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Об'єкт не знайдено
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadRequest:
+      description: Некоректний запит (структура/валідація)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: >
+        Семантична помилка: невідомий код номера/тарифу, некоректний діапазон
+        дат, застарілий `revision` тощо.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Перевищено ліміт запитів
+      headers:
+        Retry-After:
+          description: Через скільки секунд повторити
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: unknown_rate_plan_code
+        message:
+          type: string
+          example: "rate_plan_code 'STD-BB' is not mapped for property 123"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string, example: "rates[3].rate_plan_code" }
+              reason: { type: string }
+
+    Ack:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+
+    Room:
+      type: object
+      description: Категорія номера (одиниця інвентарю/наявності).
+      properties:
+        id: { type: integer, format: int64, example: 4500 }
+        code: { type: string, example: "DLX" }
+        name: { type: string, example: "Deluxe Room" }
+        max_adults: { type: integer, example: 3 }
+        max_children: { type: integer, example: 2 }
+        max_infants: { type: integer, example: 1 }
+        max_occupancy: { type: integer, example: 4 }
+
+    RatePlan:
+      type: object
+      properties:
+        id: { type: integer, format: int64, example: 13500 }
+        code: { type: string, example: "STD-BB-FLEX" }
+        name: { type: string, example: "Standard BB Flexible" }
+        room_id: { type: integer, format: int64, example: 4500 }
+        board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
+        currency: { type: string, example: "EUR" }
+        is_refundable: { type: boolean, example: true }
+
+    Mapping:
+      type: object
+      required: [entity_type, external_code, internal_id]
+      properties:
+        entity_type:
+          type: string
+          enum: [room, rate_plan]
+        external_code:
+          type: string
+          description: Код на стороні партнера (PMS/CM)
+          example: "SRV-ROOM-01"
+        internal_id:
+          type: integer
+          format: int64
+          description: id номера/тарифу в Unit.Travel
+          example: 4500
+
+    AriMessage:
+      type: object
+      required: [message_uid, property_id]
+      properties:
+        message_uid:
+          type: string
+          maxLength: 120
+          description: Унікальний id повідомлення в межах підключення (ідемпотентність)
+          example: "srv-2026-07-01T10:00:00-abc123"
+        revision:
+          type: integer
+          format: int64
+          description: >
+            Монотонний лічильник/мітка часу джерела для last-write-wins.
+            Застосовується лише якщо не старіший за збережений.
+          example: 1719827400
+        property_id:
+          type: integer
+          format: int64
+          example: 123
+        availability:
+          type: array
+          items: { $ref: '#/components/schemas/AvailabilityItem' }
+        rates:
+          type: array
+          items: { $ref: '#/components/schemas/RateItem' }
+        restrictions:
+          type: array
+          items: { $ref: '#/components/schemas/RestrictionItem' }
+
+    AvailabilityItem:
+      type: object
+      required: [room_code, date_from, date_to, units]
+      description: >
+        Наявність («rooms to sell») на категорію номера. Зберігається як
+        аллотмент; фактична доступність = units − наші підтверджені бронювання.
+      properties:
+        room_code: { type: string, description: зовнішній код номера, example: "SRV-ROOM-01" }
+        date_from: { type: string, format: date, example: "2026-07-01" }
+        date_to:   { type: string, format: date, description: включно, example: "2026-07-31" }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        units:
+          type: integer
+          minimum: 0
+          description: Кількість номерів до продажу
+          example: 5
+        closed:
+          type: boolean
+          description: Повний stop-sell на категорію (перекриває units)
+          default: false
+
+    RateItem:
+      type: object
+      required: [rate_plan_code, date_from, date_to, price, currency]
+      description: >
+        Ціна БАЗОВОГО розміщення за дорослими. Дитячі ціни задаються окремо
+        (Child rates), в ARI не передаються.
+      properties:
+        rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+        occupancy:
+          type: integer
+          description: >
+            Кількість дорослих, до якої стосується ціна. Якщо не задано —
+            застосовується до стандартного розміщення тарифу.
+          example: 2
+        date_from: { type: string, format: date }
+        date_to:   { type: string, format: date, description: включно }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        price:
+          type: number
+          format: double
+          description: Ціна за ніч (нетто, без податків/зборів)
+          example: 120.00
+        currency: { type: string, example: "EUR" }
+
+    RestrictionItem:
+      type: object
+      required: [rate_plan_code, date_from, date_to]
+      properties:
+        rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+        date_from: { type: string, format: date }
+        date_to:   { type: string, format: date, description: включно }
+        days_of_week:
+          $ref: '#/components/schemas/DaysOfWeek'
+        min_stay: { type: integer, minimum: 1, example: 2 }
+        max_stay: { type: integer, description: "0 = без обмеження", example: 0 }
+        closed_to_arrival:   { type: boolean, default: false }
+        closed_to_departure: { type: boolean, default: false }
+        stop_sell:           { type: boolean, default: false }
+        min_advance_days:    { type: integer, minimum: 0, example: 0 }
+        max_advance_days:    { type: integer, minimum: 0, description: "0 = немає", example: 0 }
+        release_days:        { type: integer, minimum: 0, example: 0 }
+
+    DaysOfWeek:
+      type: array
+      description: >
+        Дні тижня, на які діє елемент. Якщо не задано — усі дні.
+      items:
+        type: string
+        enum: [MON, TUE, WED, THU, FRI, SAT, SUN]
+      example: [MON, TUE, WED, THU, FRI]
+
+    AriAccepted:
+      type: object
+      properties:
+        message_uid: { type: string }
+        status: { type: string, enum: [received], example: received }
+        received_at: { type: string, format: date-time }
+
+    AriMessageStatus:
+      type: object
+      properties:
+        message_uid: { type: string }
+        status:
+          type: string
+          enum: [received, processing, applied, failed, skipped]
+        received_at: { type: string, format: date-time }
+        processed_at: { type: string, format: date-time, nullable: true }
+        applied_items: { type: integer, example: 62 }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/Error' }
+
+    ReservationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Reservation' }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Курсор наступної сторінки; null — даних більше немає
+
+    Reservation:
+      type: object
+      properties:
+        reservation_id: { type: string, example: "UT-9F3A21" }
+        property_id: { type: integer, format: int64, example: 123 }
+        status:
+          type: string
+          enum: [new, modified, cancelled]
+        created_at: { type: string, format: date-time }
+        modified_at: { type: string, format: date-time }
+        checkin: { type: string, format: date }
+        checkout: { type: string, format: date }
+        currency: { type: string, example: "EUR" }
+        total_price: { type: number, format: double, example: 675.00 }
+        channel: { type: string, example: "web" }
+        rooms:
+          type: array
+          items:
+            type: object
+            properties:
+              room_code: { type: string, description: зовнішній код (після маппінгу), example: "SRV-ROOM-01" }
+              rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+              occupancy:
+                type: object
+                properties:
+                  adults: { type: integer, example: 2 }
+                  children_ages:
+                    type: array
+                    items: { type: integer }
+                    example: [6, 8]
+                  infants: { type: integer, example: 0 }
+              price: { type: number, format: double, example: 675.00 }
+        guest:
+          type: object
+          properties:
+            first_name: { type: string }
+            last_name: { type: string }
+            email: { type: string, format: email }
+            country: { type: string, example: "UA" }
+
+    ReservationEvent:
+      type: object
+      description: >
+        Тіло webhook-сповіщення (Unit.Travel → endpoint партнера).
+        Підписується заголовком `X-UnitTravel-Signature` (HMAC-SHA256).
+      properties:
+        event:
+          type: string
+          enum: [reservation.created, reservation.modified, reservation.cancelled]
+        occurred_at: { type: string, format: date-time }
+        reservation: { $ref: '#/components/schemas/Reservation' }
+
+  examples:
+    AriFull:
+      summary: Наявність + ціни + обмеження одним повідомленням
+      value:
+        message_uid: "yp-2026-07-01T10:00:00Z-000187"
+        revision: 1719827400
+        property_id: 123
+        availability:
+          - room_code: "YP-DLX"
+            date_from: "2026-07-01"
+            date_to: "2026-07-31"
+            units: 5
+        rates:
+          - rate_plan_code: "YP-DLX-BB"
+            occupancy: 2
+            date_from: "2026-07-01"
+            date_to: "2026-07-31"
+            price: 120.00
+            currency: "EUR"
+        restrictions:
+          - rate_plan_code: "YP-DLX-BB"
+            date_from: "2026-07-01"
+            date_to: "2026-07-14"
+            min_stay: 2
+            closed_to_arrival: true
