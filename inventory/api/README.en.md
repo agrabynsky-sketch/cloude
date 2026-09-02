@@ -1,6 +1,6 @@
-# Unit.Travel Partner Inventory API — Integration Guide
+# Unit.Travel Hotel Partner Inventory API — Integration Guide
 
-Version: **1.0.0** · Formal spec: [`openapi.en.yaml`](./openapi.en.yaml)
+Version: **1.8.0** · Formal spec: [`openapi.en.yaml`](./openapi.en.yaml)
 (loads into Swagger UI / Redoc). Audience: **PMS Servio**, **Channel Manager
 YieldPlanet** and other PMS/CM systems.
 
@@ -15,17 +15,17 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull or web
 
 ## 1. Authentication
 
-- A **bearer token** (API key) is issued by Unit.Travel per **connection**
+- An **API key** is issued by Unit.Travel per **connection**
   (provider × property).
-- Header: `Authorization: Bearer <token>`.
+- Header: `X-API-Key: <key>`.
 - Optional — IP allowlist on the Unit.Travel side.
-- HTTPS only. Validate the token with `GET /ping`.
+- HTTPS only. Validate the key with `GET /ping`.
 
 ## 2. Environments
 
 | Environment | Base URL |
 |-------------|----------|
-| Sandbox     | `https://api.sandbox.unit.travel/partner/v1` |
+| Sandbox     | `https://api.test.unit.travel/partner/v1` |
 | Production  | `https://api.unit.travel/partner/v1` |
 
 An integration is promoted to production after passing the sandbox scenarios
@@ -107,7 +107,7 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 | HTTP | When |
 |------|------|
 | 400 | Malformed request structure/validation |
-| 401 | Missing/invalid token |
+| 401 | Missing/invalid API key |
 | 404 | Object/message not found |
 | 422 | Semantics: unmapped code, invalid range, stale `revision` |
 | 429 | Request rate limit exceeded (see `Retry-After`) |
@@ -128,12 +128,12 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 
 ## 9. Connection checklist
 
-1. Obtain a sandbox token and `property_id`.
+1. Obtain a sandbox API key and `property_id`.
 2. `GET /ping` — verify authentication.
 3. Fetch the catalog (`/rooms`, `/rate-plans`), set `/mappings`.
 4. Run `POST /ari` (availability + rates + restrictions), check the status.
 5. Simulate a reservation → receive it via pull/webhook → `acknowledge`.
-6. Agree on limits and switch to the production token.
+6. Agree on limits and switch to the production API key.
 
 ---
 

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 
 info:
-  title: Unit.Travel Partner Inventory API
-  version: "1.0.0"
+  title: Unit.Travel Hotel Partner Inventory API
+  version: "1.8.0"
   description: >
     API интеграции инвенторной системы Unit.Travel с PMS и Channel Manager
     (напр. PMS Servio, Channel Manager YieldPlanet).
@@ -27,13 +27,13 @@ info:
     email: integrations@unit.travel
 
 servers:
-  - url: https://api.sandbox.unit.travel/partner/v1
+  - url: https://api.test.unit.travel/partner/v1
     description: Sandbox (тестовое окружение)
   - url: https://api.unit.travel/partner/v1
     description: Production
 
 security:
-  - bearerAuth: []
+  - apiKeyAuth: []
 
 tags:
   - name: System
@@ -252,13 +252,14 @@ paths:
 components:
 
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
       description: >
-        Bearer-токен (API-ключ) выдаётся Unit.Travel на КАЖДОЕ подключение
-        (пара провайдер×объект). Передаётся заголовком
-        `Authorization: Bearer <token>`. Опционально — IP-allowlist.
+        API-ключ выдаётся Unit.Travel на КАЖДОЕ подключение (пара
+        провайдер×объект) и передаётся заголовком `X-API-Key: <key>`.
+        Опционально — IP-allowlist. Проверка ключа — `GET /ping`.
 
   parameters:
     PropertyId:

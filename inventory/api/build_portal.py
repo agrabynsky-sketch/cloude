@@ -23,7 +23,7 @@ HTML = f"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unit.Travel Partner Inventory API</title>
+<title>Unit.Travel Hotel Partner Inventory API</title>
 <style>
   :root {{ --bar:#0b3d91; --bar2:#0a2f6e; }}
   * {{ box-sizing:border-box; }}
@@ -48,7 +48,7 @@ HTML = f"""<!doctype html>
 </head>
 <body>
 <header>
-  <div class="brand">Unit.Travel <small>Partner Inventory API · v1.0.0</small></div>
+  <div class="brand">Unit.Travel <small>Hotel Partner Inventory API · v1.8.0</small></div>
   <div class="spacer"></div>
   <div class="langs">
 {buttons}

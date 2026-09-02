@@ -1,6 +1,6 @@
-# Unit.Travel Partner Inventory API — Integration Guide
+# Unit.Travel Hotel Partner Inventory API — Integration Guide
 
-Версия: **1.0.0** · Формальная спецификация: [`openapi.yaml`](./openapi.yaml)
+Версия: **1.8.0** · Формальная спецификация: [`openapi.ru.yaml`](./openapi.ru.yaml)
 (загружается в Swagger UI / Redoc). Аудитория: **PMS Servio**, **Channel
 Manager YieldPlanet** и другие PMS/CM.
 
@@ -15,17 +15,17 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull или
 
 ## 1. Аутентификация
 
-- **Bearer-токен** (API-ключ) выдаётся Unit.Travel на **каждое подключение**
+- **API-ключ** выдаётся Unit.Travel на **каждое подключение**
   (пара «провайдер × объект размещения»).
-- Заголовок: `Authorization: Bearer <token>`.
+- Заголовок: `X-API-Key: <key>`.
 - Опционально — IP-allowlist на стороне Unit.Travel.
-- Все запросы только по HTTPS. Проверка токена — `GET /ping`.
+- Все запросы только по HTTPS. Проверка ключа — `GET /ping`.
 
 ## 2. Окружения
 
 | Окружение | Base URL |
 |-----------|----------|
-| Sandbox   | `https://api.sandbox.unit.travel/partner/v1` |
+| Sandbox   | `https://api.test.unit.travel/partner/v1` |
 | Production| `https://api.unit.travel/partner/v1` |
 
 Интеграция принимается в production после прогона сценариев в sandbox
@@ -50,7 +50,7 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull или
 ## 4. Поток ARI (партнёр → Unit.Travel)
 
 Одно сообщение `POST /ari` может содержать любые из массивов `availability`,
-`rates`, `restrictions` (хотя бы один непустой). Пример — см. `openapi.yaml`
+`rates`, `restrictions` (хотя бы один непустой). Пример — см. `openapi.ru.yaml`
 (`examples.AriFull`).
 
 - **availability** — «rooms to sell» на категорию (`room_code`) за диапазон
@@ -106,7 +106,7 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 | HTTP | Когда |
 |------|-------|
 | 400 | Некорректная структура/валидация запроса |
-| 401 | Нет/неверный токен |
+| 401 | Нет/неверный API-ключ |
 | 404 | Объект/сообщение не найдены |
 | 422 | Семантика: немаппленный код, некорректный диапазон, устаревший `revision` |
 | 429 | Превышен лимит запросов (см. `Retry-After`) |
@@ -127,12 +127,12 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 
 ## 9. Чек-лист подключения
 
-1. Получить sandbox-токен и `property_id`.
+1. Получить тестовый API-ключ и `property_id`.
 2. `GET /ping` — проверить авторизацию.
 3. Забрать каталог (`/rooms`, `/rate-plans`), задать `/mappings`.
 4. Прогнать `POST /ari` (наличие + цены + ограничения), проверить статус.
 5. Смоделировать бронь → получить её через pull/webhook → `acknowledge`.
-6. Согласовать лимиты и перейти на production-токен.
+6. Согласовать лимиты и перейти на боевой API-ключ.
 
 ---
 

@@ -1,4 +1,4 @@
-# Unit.Travel Partner Inventory API
+# Unit.Travel Hotel Partner Inventory API
 
 Спецификация API интеграции с PMS и Channel Manager (Servio, YieldPlanet и др.).
 API integration spec for PMS and Channel Managers (Servio, YieldPlanet, etc.).
