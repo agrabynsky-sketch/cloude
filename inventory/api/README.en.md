@@ -15,9 +15,10 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull or web
 
 ## 1. Authentication
 
-- An **API key** is issued by Unit.Travel per **connection**
-  (provider × property).
+- **One shared API key per provider** (the whole PMS/CM), NOT per hotel.
 - Header: `X-API-Key: <key>`.
+- Every property-scoped call carries `property_id` and works only when the
+  hotel's connection is active (see §3).
 - Optional — IP allowlist on the Unit.Travel side.
 - HTTPS only. Validate the key with `GET /ping`.
 
@@ -31,7 +32,24 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull or web
 An integration is promoted to production after passing the sandbox scenarios
 (mapping → ARI → reservation → cancellation).
 
-## 3. Onboarding: code mapping (done once)
+## 3. Onboarding
+
+### 3.0 Initiate a hotel connection (with Extranet confirmation)
+
+1. The hotel copies its **`property_id`** from the Unit.Travel Extranet.
+2. In the PMS/CM Channels/Integrations screen the hotel pastes the
+   `property_id` and starts the connection → the PMS/CM calls our
+   **`POST /connections`** (with the provider's shared API key). A connection
+   is created in `pending` state.
+3. The hotel **confirms** (or rejects) the connection in our Extranet.
+4. We notify the PMS/CM: webhook **`connection.activated`** (or the PMS polls
+   **`GET /connections/{id}`** until `status = active`).
+5. Only after `active` do catalogs, mappings and ARI open. Before that, any
+   property-scoped call returns `409` (`connection_not_active`).
+
+Disconnect — `DELETE /connections/{id}`.
+
+### 3.1 Code mapping (after activation, done once)
 
 The partner works with ITS OWN room/rate codes. Before the first ARI you must
 map them to our ids:

@@ -135,6 +135,85 @@ paths:
               schema: { $ref: '#/components/schemas/Ack' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /connections:
+    post:
+      tags: [Onboarding]
+      summary: Инициировать подключение отеля (PMS/CM → Unit.Travel)
+      description: >
+        Вызывается PMS/CM, когда отель вставляет свой `property_id` из
+        Unit.Travel в раздел «Каналы/Интеграции» партнёра. Создаёт подключение
+        в статусе `pending` и уведомляет отель ПОДТВЕРДИТЬ его в Extranet
+        Unit.Travel. Справочники, маппинг и ARI закрыты, пока подключение не
+        станет `active`. Авторизация — общим API-ключом провайдера. Идемпотентно
+        по (провайдер, property_id): повтор возвращает существующее подключение.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequest' }
+      responses:
+        "201":
+          description: Запрос на подключение создан (ждёт подтверждения отеля)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "200":
+          description: Подключение уже существует — возвращается текущее состояние
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [Onboarding]
+      summary: Список подключений провайдера (опц. по отелю/статусу)
+      parameters:
+        - name: property_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, active, rejected, disconnected] }
+      responses:
+        "200":
+          description: Подключения
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Connection' }
+
+  /connections/{connection_id}:
+    get:
+      tags: [Onboarding]
+      summary: Статус подключения (опрашивать до active)
+      description: >
+        PMS/CM опрашивает до `status = active`. Либо подпишитесь на webhook
+        `connection.*`, чтобы получить уведомление, когда отель подтвердит.
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        "200":
+          description: Состояние подключения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Onboarding]
+      summary: Отключить (прекратить синхронизацию отеля)
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        "200":
+          description: Отключено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "404": { $ref: '#/components/responses/NotFound' }
 
   /ari:
     post:
@@ -176,6 +255,7 @@ paths:
               schema: { $ref: '#/components/schemas/AriMessageStatus' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
         "422": { $ref: '#/components/responses/Unprocessable' }
         "429": { $ref: '#/components/responses/RateLimited' }
 
@@ -257,8 +337,10 @@ components:
       in: header
       name: X-API-Key
       description: >
-        API-ключ выдаётся Unit.Travel на КАЖДОЕ подключение (пара
-        провайдер×объект) и передаётся заголовком `X-API-Key: <key>`.
+        ЕДИНЫЙ общий API-ключ выдаётся Unit.Travel на ПРОВАЙДЕРА (весь
+        PMS/CM), а не на каждый отель. Передаётся заголовком `X-API-Key: <key>`.
+        Каждый запрос по конкретному отелю несёт `property_id` и работает
+        только когда подключение отеля в статусе `active` (см. `POST /connections`).
         Опционально — IP-allowlist. Проверка ключа — `GET /ping`.
 
   parameters:
@@ -281,6 +363,12 @@ components:
         Необязательный дубль `message_uid` из тела (если задан — должен
         совпадать). Обеспечивает идемпотентность на уровне транспорта.
       schema: { type: string, maxLength: 120 }
+    ConnectionId:
+      name: connection_id
+      in: path
+      required: true
+      description: Идентификатор подключения из POST /connections
+      schema: { type: string }
 
   responses:
     Unauthorized:
@@ -311,6 +399,14 @@ components:
         Retry-After:
           description: Через сколько секунд повторить
           schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: >
+        Подключение отеля для этого property не активно
+        (pending/rejected/disconnected). Справочники, маппинг и ARI доступны
+        только для активного подключения (см. POST /connections).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -555,6 +651,59 @@ components:
             last_name: { type: string }
             email: { type: string, format: email }
             country: { type: string, example: "UA" }
+
+    ConnectionRequest:
+      type: object
+      required: [property_id]
+      properties:
+        property_id:
+          type: integer
+          format: int64
+          description: property_id из Extranet Unit.Travel, скопированный отелем
+          example: 123
+        external_property_code:
+          type: string
+          description: Код объекта на стороне партнёра (PMS/CM)
+          example: "SRV-HOTEL-777"
+        note:
+          type: string
+          description: Необязательная заметка, показываемая отелю при подтверждении
+
+    Connection:
+      type: object
+      properties:
+        connection_id: { type: string, example: "conn_01HQ4Z9..." }
+        property_id: { type: integer, format: int64, example: 123 }
+        external_property_code: { type: string, nullable: true, example: "SRV-HOTEL-777" }
+        status:
+          type: string
+          enum: [pending, active, rejected, disconnected]
+          description: >
+            pending — ждёт подтверждения отеля в Extranet; active —
+            подтверждено, справочники/маппинг/ARI открыты; rejected — отель
+            отклонил; disconnected — подключение завершено.
+        scope:
+          type: object
+          description: Что разрешено этому подключению (задаётся на стороне Unit.Travel)
+          properties:
+            rates: { type: boolean, example: true }
+            availability: { type: boolean, example: true }
+            restrictions: { type: boolean, example: true }
+        requested_at: { type: string, format: date-time }
+        activated_at: { type: string, format: date-time, nullable: true }
+
+    ConnectionEvent:
+      type: object
+      description: >
+        Webhook (Unit.Travel → endpoint партнёра) при изменении отелем статуса
+        подключения в Extranet. Подписывается `X-UnitTravel-Signature`
+        (HMAC-SHA256). На `connection.activated` PMS/CM может начинать синхро.
+      properties:
+        event:
+          type: string
+          enum: [connection.activated, connection.rejected, connection.disconnected]
+        occurred_at: { type: string, format: date-time }
+        connection: { $ref: '#/components/schemas/Connection' }
 
     ReservationEvent:
       type: object

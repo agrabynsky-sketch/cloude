@@ -34,29 +34,39 @@ CREATE TABLE integration_providers (
   protocol  ENUM('ota_htng','json_api','xml_api','csv','custom') NOT NULL DEFAULT 'json_api',
   push_supported TINYINT(1) NOT NULL DEFAULT 1,  -- умеет пушить нам ARI
   pull_supported TINYINT(1) NOT NULL DEFAULT 0,  -- умеем опрашивать его
+  -- ОДИН ОБЩИЙ API-ключ на провайдера (не на отель). Хранится ссылкой на
+  -- секрет в vault; конкретный отель определяется property_id + активным
+  -- provider_connections. Webhook-эндпоинт провайдера — для connection.*/broни.
+  api_key_ref     VARCHAR(120) NULL,
+  webhook_url     VARCHAR(255) NULL,
+  webhook_secret_ref VARCHAR(120) NULL,   -- секрет для X-UnitTravel-Signature
   PRIMARY KEY (id),
   UNIQUE KEY uq_provider_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
--- 2. ПОДКЛЮЧЕНИЯ (экземпляр интеграции для конкретного отеля)
+-- 2. ПОДКЛЮЧЕНИЯ (связка провайдер↔отель, с подтверждением в Extranet)
+--    Создаётся по POST /connections (status='pending'), активируется, когда
+--    отель ПОДТВЕРЖДАЕТ в нашем Extranet (status='active'). Только активное
+--    подключение открывает справочники/маппинг/ARI по этому отелю.
 --    Один отель может быть подключён к нескольким системам; одна система
---    может обслуживать много отелей. connection_id — источник изменений.
+--    (один api_key) обслуживает много отелей.
 -- ---------------------------------------------------------------------
 CREATE TABLE provider_connections (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   provider_id   SMALLINT UNSIGNED NOT NULL,
-  hotel_id      INT UNSIGNED NOT NULL,
-  external_hotel_code VARCHAR(64) NULL,          -- id отеля на стороне провайдера
-  credentials_ref VARCHAR(120) NULL,             -- ССЫЛКА на секрет в vault (не сам ключ!)
+  hotel_id      INT UNSIGNED NOT NULL,           -- = property_id, введённый отелем
+  external_hotel_code VARCHAR(64) NULL,          -- код отеля на стороне провайдера
   -- что этому подключению разрешено менять у нас:
   manages_rates        TINYINT(1) NOT NULL DEFAULT 1,
   manages_availability TINYINT(1) NOT NULL DEFAULT 1,
   manages_restrictions TINYINT(1) NOT NULL DEFAULT 1,
-  status        ENUM('active','paused','error','disabled') NOT NULL DEFAULT 'active',
+  status        ENUM('pending','active','rejected','paused','error','disconnected')
+                NOT NULL DEFAULT 'pending',
+  requested_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, -- создано POST /connections
+  activated_at  DATETIME NULL,                   -- когда отель подтвердил в Extranet
   last_msg_at   DATETIME NULL,                   -- последнее принятое сообщение
   last_pull_cursor VARCHAR(120) NULL,            -- курсор дельта-опроса (для pull)
-  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_conn (provider_id, hotel_id),
   KEY idx_conn_hotel (hotel_id, status)

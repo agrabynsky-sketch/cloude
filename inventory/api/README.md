@@ -24,9 +24,16 @@ description language.
 
 ## API methods / Методы API
 
+Авторизация — **один общий API-ключ на провайдера** (`X-API-Key`), не на отель. /
+Auth — **one shared API key per provider** (`X-API-Key`), not per hotel.
+
 | Method · Метод | Endpoint | Purpose · Назначение |
 |---|---|---|
-| `GET` | `/ping` | Health-check + проверка токена / health-check + token check |
+| `GET` | `/ping` | Health-check + проверка ключа / health-check + key check |
+| `POST` | `/connections` | Инициировать подключение отеля (PMS/CM → нам, статус `pending`) / initiate hotel connection |
+| `GET` | `/connections` | Список подключений провайдера / list provider connections |
+| `GET` | `/connections/{id}` | Статус подключения (ждать `active`) / connection status (await active) |
+| `DELETE` | `/connections/{id}` | Отключить отель / disconnect hotel |
 | `GET` | `/properties/{id}/rooms` | Каталог категорий номеров (для маппинга) / room categories catalog |
 | `GET` | `/properties/{id}/rate-plans` | Каталог тарифов (для маппинга) / rate plans catalog |
 | `GET` | `/properties/{id}/mappings` | Текущие соответствия кодов / current code mappings |
@@ -35,4 +42,5 @@ description language.
 | `GET` | `/ari/messages/{message_uid}` | Статус обработки ARI-сообщения / ARI message processing status |
 | `GET` | `/reservations` | Выдача броней (pull, по курсору) / fetch reservations (pull, cursor) |
 | `POST` | `/reservations/{id}/acknowledge` | Подтвердить приём брони / acknowledge reservation receipt |
+| `webhook` | `connection.*` | Уведомление о подтверждении/отклонении подключения отелем / hotel confirmed/rejected connection (HMAC) |
 | `webhook` | `ReservationEvent` | Push броней партнёру (HMAC-подпись) / push reservations to partner (HMAC-signed) |

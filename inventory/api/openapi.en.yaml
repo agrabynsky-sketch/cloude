@@ -135,6 +135,85 @@ paths:
               schema: { $ref: '#/components/schemas/Ack' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /connections:
+    post:
+      tags: [Onboarding]
+      summary: Initiate a hotel connection (PMS/CM → Unit.Travel)
+      description: >
+        Called by the PMS/CM when a hotel pastes its Unit.Travel `property_id`
+        into the partner's Channels/Integrations screen. Creates a connection in
+        `pending` state and notifies the hotel to CONFIRM it in the Unit.Travel
+        Extranet. Catalogs, mappings and ARI stay closed until the connection is
+        `active`. Authenticated with the provider's shared API key. Idempotent by
+        (provider, property_id): a repeated call returns the existing connection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequest' }
+      responses:
+        "201":
+          description: Connection request created (pending hotel confirmation)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "200":
+          description: Connection already exists — current state returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [Onboarding]
+      summary: List this provider's connections (optionally by property/status)
+      parameters:
+        - name: property_id
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, active, rejected, disconnected] }
+      responses:
+        "200":
+          description: Connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Connection' }
+
+  /connections/{connection_id}:
+    get:
+      tags: [Onboarding]
+      summary: Connection status (poll until active)
+      description: >
+        The PMS/CM polls this until `status = active`. Alternatively, subscribe
+        to the `connection.*` webhook to be notified when the hotel confirms.
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        "200":
+          description: Connection state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Onboarding]
+      summary: Disconnect (stop syncing this property)
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        "200":
+          description: Disconnected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "404": { $ref: '#/components/responses/NotFound' }
 
   /ari:
     post:
@@ -176,6 +255,7 @@ paths:
               schema: { $ref: '#/components/schemas/AriMessageStatus' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
         "422": { $ref: '#/components/responses/Unprocessable' }
         "429": { $ref: '#/components/responses/RateLimited' }
 
@@ -258,9 +338,11 @@ components:
       in: header
       name: X-API-Key
       description: >
-        An API key is issued by Unit.Travel PER connection (provider ×
-        property) and sent via the `X-API-Key: <key>` header. Optionally —
-        IP allowlist. Validate the key with `GET /ping`.
+        A SINGLE shared API key is issued by Unit.Travel PER PROVIDER (the
+        whole PMS/CM), not per hotel. Sent via the `X-API-Key: <key>` header.
+        Every property-scoped call carries its `property_id` and works only
+        once the hotel's connection is `active` (see `POST /connections`).
+        Optionally — IP allowlist. Validate the key with `GET /ping`.
 
   parameters:
     PropertyId:
@@ -282,6 +364,12 @@ components:
         Optional duplicate of the body `message_uid` (if set, must match).
         Provides idempotency at the transport level.
       schema: { type: string, maxLength: 120 }
+    ConnectionId:
+      name: connection_id
+      in: path
+      required: true
+      description: Connection identifier returned by POST /connections
+      schema: { type: string }
 
   responses:
     Unauthorized:
@@ -312,6 +400,14 @@ components:
         Retry-After:
           description: Seconds to wait before retrying
           schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: >
+        The hotel's connection for this property is not active
+        (pending/rejected/disconnected). Catalogs, mappings and ARI are
+        available only for an active connection (see POST /connections).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -556,6 +652,59 @@ components:
             last_name: { type: string }
             email: { type: string, format: email }
             country: { type: string, example: "UA" }
+
+    ConnectionRequest:
+      type: object
+      required: [property_id]
+      properties:
+        property_id:
+          type: integer
+          format: int64
+          description: Unit.Travel property id the hotel copied from the Extranet
+          example: 123
+        external_property_code:
+          type: string
+          description: The property's code on the partner (PMS/CM) side
+          example: "SRV-HOTEL-777"
+        note:
+          type: string
+          description: Optional free-text note shown to the hotel on confirmation
+
+    Connection:
+      type: object
+      properties:
+        connection_id: { type: string, example: "conn_01HQ4Z9..." }
+        property_id: { type: integer, format: int64, example: 123 }
+        external_property_code: { type: string, nullable: true, example: "SRV-HOTEL-777" }
+        status:
+          type: string
+          enum: [pending, active, rejected, disconnected]
+          description: >
+            pending — awaiting hotel confirmation in the Extranet; active —
+            confirmed, catalogs/mappings/ARI open; rejected — hotel declined;
+            disconnected — connection ended.
+        scope:
+          type: object
+          description: What this connection may manage (set on the Unit.Travel side)
+          properties:
+            rates: { type: boolean, example: true }
+            availability: { type: boolean, example: true }
+            restrictions: { type: boolean, example: true }
+        requested_at: { type: string, format: date-time }
+        activated_at: { type: string, format: date-time, nullable: true }
+
+    ConnectionEvent:
+      type: object
+      description: >
+        Webhook (Unit.Travel → partner endpoint) sent when the hotel changes the
+        connection state in the Extranet. Signed with `X-UnitTravel-Signature`
+        (HMAC-SHA256). On `connection.activated` the PMS/CM may start syncing.
+      properties:
+        event:
+          type: string
+          enum: [connection.activated, connection.rejected, connection.disconnected]
+        occurred_at: { type: string, format: date-time }
+        connection: { $ref: '#/components/schemas/Connection' }
 
     ReservationEvent:
       type: object
