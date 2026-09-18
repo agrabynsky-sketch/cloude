@@ -5,14 +5,14 @@ info:
   version: "1.8.0"
   description: >
     Integration API of the Unit.Travel inventory system for PMS and Channel
-    Managers (e.g. PMS Servio, Channel Manager YieldPlanet).
+    Manager systems.
 
     ARI model (Availability, Rates, Inventory): the partner (PMS/CM) PUSHES
     availability, rates and restriction updates to Unit.Travel; Unit.Travel
     returns reservations back (pull via `/reservations` or push via webhook).
 
     Core principles:
-      * Idempotency — every ARI message carries a `message_uid` unique within
+      * Replay protection (Idempotency) — every ARI message carries a `message_uid` unique within
         the connection; resending the same `message_uid` is not applied twice,
         the original result is returned instead.
       * Ordering / last-write-wins — each element carries a `revision`
@@ -62,80 +62,6 @@ paths:
                   status: { type: string, example: ok }
                   server_time: { type: string, format: date-time }
                   connection_id: { type: integer, example: 42 }
-
-  /properties/{property_id}/rooms:
-    get:
-      tags: [Onboarding]
-      summary: Unit.Travel room categories catalog (for mapping)
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: List of room categories
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Room' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "404": { $ref: '#/components/responses/NotFound' }
-
-  /properties/{property_id}/rate-plans:
-    get:
-      tags: [Onboarding]
-      summary: Unit.Travel rate plans catalog (for mapping)
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: List of rate plans
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/RatePlan' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "404": { $ref: '#/components/responses/NotFound' }
-
-  /properties/{property_id}/mappings:
-    get:
-      tags: [Onboarding]
-      summary: Current mapping of partner external codes to our ids
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: List of mappings
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Mapping' }
-    put:
-      tags: [Onboarding]
-      summary: Set/update code mappings (idempotent upsert)
-      description: >
-        The partner submits the correspondence of ITS room/rate codes to our
-        `room_id` / `rate_plan_id`. Required before sending ARI: ARI elements
-        with an unknown code will be rejected.
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: array
-              items: { $ref: '#/components/schemas/Mapping' }
-      responses:
-        "200":
-          description: Mappings saved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Ack' }
-        "400": { $ref: '#/components/responses/BadRequest' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "409": { $ref: '#/components/responses/Conflict' }
 
   /connections:
     post:
@@ -214,6 +140,80 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Ack' }
         "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rooms:
+    get:
+      tags: [Onboarding]
+      summary: Unit.Travel room categories catalog (for mapping)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of room categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Room' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rate-plans:
+    get:
+      tags: [Onboarding]
+      summary: Unit.Travel rate plans catalog (for mapping)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of rate plans
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RatePlan' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/mappings:
+    get:
+      tags: [Onboarding]
+      summary: Current mapping of partner external codes to our ids
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: List of mappings
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mapping' }
+    put:
+      tags: [Onboarding]
+      summary: Set/update code mappings (idempotent upsert)
+      description: >
+        The partner submits the correspondence of ITS room/rate codes to our
+        `room_id` / `rate_plan_id`. Required before sending ARI: ARI elements
+        with an unknown code will be rejected.
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Mapping' }
+      responses:
+        "200":
+          description: Mappings saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
 
   /ari:
     post:

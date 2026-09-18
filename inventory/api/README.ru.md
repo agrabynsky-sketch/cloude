@@ -1,8 +1,7 @@
 # Unit.Travel Hotel Partner Inventory API — Integration Guide
 
 Версия: **1.8.0** · Формальная спецификация: [`openapi.ru.yaml`](./openapi.ru.yaml)
-(загружается в Swagger UI / Redoc). Аудитория: **PMS Servio**, **Channel
-Manager YieldPlanet** и другие PMS/CM.
+(загружается в Swagger UI / Redoc). Аудитория: **PMS и Channel Manager**.
 
 Модель интеграции — **ARI** (Availability, Rates, Inventory):
 
@@ -80,7 +79,7 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull или
 - Диапазон дат — `date_from..date_to` **включительно**, опционально
   `days_of_week` (иначе все дни).
 
-### 4.1 Идемпотентность
+### 4.1 Защита от повторов (Идемпотентность)
 `message_uid` уникален в рамках подключения. Повторная отправка того же
 `message_uid` **не применяется заново** — возвращается прежний результат
 (`200` вместо `202`). Используйте это при ретраях по таймауту.

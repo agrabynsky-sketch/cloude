@@ -1,8 +1,8 @@
 # Unit.Travel Hotel Partner Inventory API — Integration Guide
 
 Version: **1.8.0** · Formal spec: [`openapi.en.yaml`](./openapi.en.yaml)
-(loads into Swagger UI / Redoc). Audience: **PMS Servio**, **Channel Manager
-YieldPlanet** and other PMS/CM systems.
+(loads into Swagger UI / Redoc). Audience: **PMS and Channel Manager
+systems**.
 
 Integration model — **ARI** (Availability, Rates, Inventory):
 
@@ -81,7 +81,7 @@ A single `POST /ari` message may carry any of the `availability`, `rates`,
 - Date range — `date_from..date_to` **inclusive**, optional `days_of_week`
   (otherwise all days).
 
-### 4.1 Idempotency
+### 4.1 Replay protection (Idempotency)
 `message_uid` is unique within a connection. Resending the same `message_uid`
 is **not applied again** — the previous result is returned (`200` instead of
 `202`). Use this for timeout retries.

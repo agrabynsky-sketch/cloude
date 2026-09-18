@@ -1,7 +1,7 @@
 # Unit.Travel Hotel Partner Inventory API
 
-Спецификация API интеграции с PMS и Channel Manager (Servio, YieldPlanet и др.).
-API integration spec for PMS and Channel Managers (Servio, YieldPlanet, etc.).
+Спецификация API интеграции с PMS и Channel Manager.
+API integration spec for PMS and Channel Managers.
 
 | | 🇷🇺 Русский | 🇬🇧 English | 🇺🇦 Українська |
 |---|-----------|-----------|--------------|
@@ -16,7 +16,7 @@ description language.
 
 **[`dist/index.html`](./dist/index.html)** — self-contained страница Redoc с
 переключателем **RU / EN / UK**, Redoc встроен внутрь → работает **офлайн**,
-без CDN. Это файл для пересылки партнёрам (Servio, YieldPlanet).
+без CDN. Это файл для пересылки партнёрам-интеграторам.
 
 Пересобрать / rebuild: `python3 build_portal.py` (читает три `openapi.*.yaml`
 и `vendor/redoc.standalone.js`). Также спеку можно открыть в

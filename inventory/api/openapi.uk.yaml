@@ -4,15 +4,14 @@ info:
   title: Unit.Travel Hotel Partner Inventory API
   version: "1.8.0"
   description: >
-    API інтеграції інвенторної системи Unit.Travel з PMS та Channel Manager
-    (напр. PMS Servio, Channel Manager YieldPlanet).
+    API інтеграції інвенторної системи Unit.Travel з PMS та Channel Manager.
 
     Модель ARI (Availability, Rates, Inventory): партнер (PMS/CM) НАДСИЛАЄ
     оновлення наявності, цін та обмежень до Unit.Travel; Unit.Travel повертає
     бронювання назад (pull через `/reservations` або push через webhook).
 
     Основні принципи:
-      * Ідемпотентність — кожне ARI-повідомлення має `message_uid`, унікальний
+      * Захист від повторів (Ідемпотентність) — кожне ARI-повідомлення має `message_uid`, унікальний
         у межах підключення; повтор з тим самим `message_uid` не застосовується
         повторно, а повертає початковий результат.
       * Порядок / last-write-wins — кожен елемент має `revision` (монотонний
@@ -62,80 +61,6 @@ paths:
                   status: { type: string, example: ok }
                   server_time: { type: string, format: date-time }
                   connection_id: { type: integer, example: 42 }
-
-  /properties/{property_id}/rooms:
-    get:
-      tags: [Onboarding]
-      summary: Каталог категорій номерів Unit.Travel (для маппінгу)
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: Список категорій
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Room' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "404": { $ref: '#/components/responses/NotFound' }
-
-  /properties/{property_id}/rate-plans:
-    get:
-      tags: [Onboarding]
-      summary: Каталог тарифних планів Unit.Travel (для маппінгу)
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: Список тарифів
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/RatePlan' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "404": { $ref: '#/components/responses/NotFound' }
-
-  /properties/{property_id}/mappings:
-    get:
-      tags: [Onboarding]
-      summary: Поточні відповідності зовнішніх кодів партнера нашим id
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      responses:
-        "200":
-          description: Список маппінгів
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Mapping' }
-    put:
-      tags: [Onboarding]
-      summary: Задати/оновити відповідності кодів (idempotent upsert)
-      description: >
-        Партнер надсилає відповідність СВОЇХ кодів номерів/тарифів нашим
-        `room_id` / `rate_plan_id`. Потрібно до надсилання ARI: елементи ARI з
-        невідомим кодом будуть відхилені.
-      parameters:
-        - $ref: '#/components/parameters/PropertyId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: array
-              items: { $ref: '#/components/schemas/Mapping' }
-      responses:
-        "200":
-          description: Маппінги збережено
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Ack' }
-        "400": { $ref: '#/components/responses/BadRequest' }
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "409": { $ref: '#/components/responses/Conflict' }
 
   /connections:
     post:
@@ -214,6 +139,80 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Ack' }
         "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rooms:
+    get:
+      tags: [Onboarding]
+      summary: Каталог категорій номерів Unit.Travel (для маппінгу)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список категорій
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Room' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/rate-plans:
+    get:
+      tags: [Onboarding]
+      summary: Каталог тарифних планів Unit.Travel (для маппінгу)
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список тарифів
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RatePlan' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /properties/{property_id}/mappings:
+    get:
+      tags: [Onboarding]
+      summary: Поточні відповідності зовнішніх кодів партнера нашим id
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      responses:
+        "200":
+          description: Список маппінгів
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Mapping' }
+    put:
+      tags: [Onboarding]
+      summary: Задати/оновити відповідності кодів (idempotent upsert)
+      description: >
+        Партнер надсилає відповідність СВОЇХ кодів номерів/тарифів нашим
+        `room_id` / `rate_plan_id`. Потрібно до надсилання ARI: елементи ARI з
+        невідомим кодом будуть відхилені.
+      parameters:
+        - $ref: '#/components/parameters/PropertyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Mapping' }
+      responses:
+        "200":
+          description: Маппінги збережено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ack' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
 
   /ari:
     post:
