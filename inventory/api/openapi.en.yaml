@@ -12,19 +12,21 @@ info:
     returns reservations back (pull via `/reservations` or push via webhook).
 
     Core principles:
-      * Replay protection (Idempotency) — every ARI message carries a `message_uid` unique within
-        the connection; resending the same `message_uid` is not applied twice,
-        the original result is returned instead.
+      * Replay protection (Idempotency) — every ARI message carries a
+        `message_uid` unique within the connection; resending the same
+        `message_uid` is not applied twice, the original result is returned.
       * Ordering / last-write-wins — each element carries a `revision`
         (source-side monotonic counter/timestamp); an update is applied only
         if its `revision` is not older than the stored one.
       * Asynchronous — the ARI intake replies `202 Accepted`; processing status
         is polled via `GET /ari/messages/{message_uid}`.
-      * Codes — the partner uses its OWN room/rate codes; the correspondence to
-        our ids is set once via `/mappings`.
+      * Codes — the partner may reference rooms/rates by ITS OWN codes
+        (`room_code` / `rate_plan_code`) and/or by our ids (`room_id` /
+        `rate_plan_id`). The correspondence is set once via `/mappings`; both
+        the code and the id are returned in catalogs and reservations.
   contact:
     name: Unit.Travel Integrations
-    email: integrations@unit.travel
+    email: dev@unit.travel
 
 servers:
   - url: https://api.test.unit.travel/partner/v1
@@ -39,7 +41,7 @@ tags:
   - name: System
     description: Availability check
   - name: Onboarding
-    description: Room/rate catalog and code mapping
+    description: Connections, room/rate catalog and code mapping
   - name: ARI
     description: Availability, rates and restrictions intake (partner → Unit.Travel)
   - name: Reservations
@@ -50,10 +52,10 @@ paths:
   /ping:
     get:
       tags: [System]
-      summary: Health-check and token validation
+      summary: Health-check and key validation
       responses:
         "200":
-          description: Service is up, token is valid
+          description: Service is up, key is valid
           content:
             application/json:
               schema:
@@ -61,7 +63,8 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   server_time: { type: string, format: date-time }
-                  connection_id: { type: integer, example: 42 }
+                  provider_id: { type: integer, example: 42 }
+        "401": { $ref: '#/components/responses/Unauthorized' }
 
   /connections:
     post:
@@ -111,6 +114,8 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Connection' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
 
   /connections/{connection_id}:
     get:
@@ -127,6 +132,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Connection' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Onboarding]
@@ -139,6 +145,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Ack' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
 
   /properties/{property_id}/rooms:
@@ -157,6 +164,7 @@ paths:
                 items: { $ref: '#/components/schemas/Room' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
 
   /properties/{property_id}/rate-plans:
     get:
@@ -174,6 +182,7 @@ paths:
                 items: { $ref: '#/components/schemas/RatePlan' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
 
   /properties/{property_id}/mappings:
     get:
@@ -189,6 +198,9 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Mapping' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
     put:
       tags: [Onboarding]
       summary: Set/update code mappings (idempotent upsert)
@@ -213,6 +225,7 @@ paths:
               schema: { $ref: '#/components/schemas/Ack' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
         "409": { $ref: '#/components/responses/Conflict' }
 
   /ari:
@@ -224,8 +237,14 @@ paths:
         `202 Accepted`; the actual apply is asynchronous, poll status via
         `GET /ari/messages/{message_uid}`.
 
-        Any of the `availability` / `rates` / `restrictions` arrays may be
-        sent (at least one non-empty).
+        ONE property — set `property_id` and any of the `availability` /
+        `rates` / `restrictions` arrays (at least one non-empty). MANY
+        properties — use `items[]`, each element carrying its own `property_id`
+        and arrays.
+
+        Rates support two pricing models (see `RateItem.pricing_model`):
+        `per_room` (one price per room+rate) and `per_guest`
+        (`occupancy_prices[]` — absolute price for each number of guests).
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -234,8 +253,12 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AriMessage' }
             examples:
-              full:
-                $ref: '#/components/examples/AriFull'
+              perRoom:
+                $ref: '#/components/examples/AriPerRoom'
+              perGuest:
+                $ref: '#/components/examples/AriPerGuest'
+              multiProperty:
+                $ref: '#/components/examples/AriMultiProperty'
       responses:
         "202":
           description: Message accepted for processing
@@ -274,6 +297,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AriMessageStatus' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
 
   /reservations:
@@ -283,6 +307,11 @@ paths:
       description: >
         For PMS/CM that fetch reservations by polling. Paginated by cursor.
         Alternative — webhook (see README and `ReservationEvent`).
+
+        Guests: the response always carries a `primary_guest` (contacts +
+        nationality). Hotels that require the names of ALL guests can also
+        receive the optional `guests[]` array, where each guest is bound to a
+        room via `room_index` (relevant for multi-room bookings).
       parameters:
         - $ref: '#/components/parameters/PropertyId2'
         - name: since
@@ -307,6 +336,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReservationList' }
+        "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
 
   /reservations/{reservation_id}/acknowledge:
@@ -328,6 +358,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Ack' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
 
 components:
@@ -362,7 +393,7 @@ components:
       required: false
       description: >
         Optional duplicate of the body `message_uid` (if set, must match).
-        Provides idempotency at the transport level.
+        Provides replay protection at the transport level.
       schema: { type: string, maxLength: 120 }
     ConnectionId:
       name: connection_id
@@ -373,17 +404,17 @@ components:
 
   responses:
     Unauthorized:
-      description: Missing/invalid token
+      description: Missing or invalid API key
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     NotFound:
-      description: Object not found
+      description: Object not found (unknown id / not in this provider's scope)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     BadRequest:
-      description: Malformed request (structure/validation)
+      description: Malformed request (body/query structure or validation)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -420,10 +451,10 @@ components:
       properties:
         code:
           type: string
-          example: unknown_rate_plan_code
+          example: connection_not_active
         message:
           type: string
-          example: "rate_plan_code 'STD-BB' is not mapped for property 123"
+          example: "connection for property 123 is not active"
         details:
           type: array
           items:
@@ -444,6 +475,18 @@ components:
         id: { type: integer, format: int64, example: 4500 }
         code: { type: string, example: "DLX" }
         name: { type: string, example: "Deluxe Room" }
+        base_occupancy:
+          type: integer
+          description: Standard number of guests the base price covers
+          example: 2
+        pricing_model:
+          type: string
+          enum: [per_room, per_guest]
+          description: >
+            How this room is priced — `per_room` (occupancy-independent) or
+            `per_guest` (price depends on the number of guests). ARI rate
+            updates must match this model.
+          example: per_room
         max_adults: { type: integer, example: 3 }
         max_children: { type: integer, example: 2 }
         max_infants: { type: integer, example: 1 }
@@ -459,6 +502,20 @@ components:
         board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
         currency: { type: string, example: "EUR" }
         is_refundable: { type: boolean, example: true }
+        is_private_rate:
+          type: boolean
+          description: Private/negotiated rate (visible only to entitled accounts/codes)
+          example: false
+        is_package_rate:
+          type: boolean
+          description: Package rate (bundled with extras/services)
+          example: false
+        parent_rate_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: For a derived rate — the id of the parent rate it inherits from
+          example: null
 
     Mapping:
       type: object
@@ -474,17 +531,20 @@ components:
         internal_id:
           type: integer
           format: int64
-          description: Room/rate id in Unit.Travel
+          description: Room/rate id in Unit.Travel (room_id / rate_plan_id)
           example: 4500
 
     AriMessage:
       type: object
-      required: [message_uid, property_id]
+      required: [message_uid]
+      description: >
+        Provide EITHER top-level `property_id` + arrays (single property) OR
+        `items[]` (many properties). `message_uid` is always required.
       properties:
         message_uid:
           type: string
           maxLength: 120
-          description: Message id unique within the connection (idempotency)
+          description: Message id unique within the connection (replay protection)
           example: "srv-2026-07-01T10:00:00-abc123"
         revision:
           type: integer
@@ -496,7 +556,27 @@ components:
         property_id:
           type: integer
           format: int64
+          description: Single-property shorthand (omit when using items[])
           example: 123
+        availability:
+          type: array
+          items: { $ref: '#/components/schemas/AvailabilityItem' }
+        rates:
+          type: array
+          items: { $ref: '#/components/schemas/RateItem' }
+        restrictions:
+          type: array
+          items: { $ref: '#/components/schemas/RestrictionItem' }
+        items:
+          type: array
+          description: Multi-property batch — each element updates one property.
+          items: { $ref: '#/components/schemas/AriPropertyBatch' }
+
+    AriPropertyBatch:
+      type: object
+      required: [property_id]
+      properties:
+        property_id: { type: integer, format: int64, example: 123 }
         availability:
           type: array
           items: { $ref: '#/components/schemas/AvailabilityItem' }
@@ -509,12 +589,14 @@ components:
 
     AvailabilityItem:
       type: object
-      required: [room_code, date_from, date_to, units]
+      required: [date_from, date_to, units]
       description: >
-        Availability ("rooms to sell") for a room category. Stored as an
-        allotment; effective availability = units − our confirmed bookings.
+        Availability ("rooms to sell") for a room category. Identify the room by
+        `room_code` and/or `room_id` (at least one). Stored as an allotment;
+        effective availability = units − our confirmed bookings.
       properties:
         room_code: { type: string, description: external room code, example: "SRV-ROOM-01" }
+        room_id:   { type: integer, format: int64, description: Unit.Travel room id, example: 4500 }
         date_from: { type: string, format: date, example: "2026-07-01" }
         date_to:   { type: string, format: date, description: inclusive, example: "2026-07-31" }
         days_of_week:
@@ -531,34 +613,56 @@ components:
 
     RateItem:
       type: object
-      required: [rate_plan_code, date_from, date_to, price, currency]
+      required: [date_from, date_to, currency]
       description: >
-        Price of the BASE adult occupancy. Child prices are configured
-        separately (Child rates) and are NOT sent over ARI.
+        Price for a room + rate pair. Identify the pair by codes
+        (`room_code` + `rate_plan_code`) and/or by our ids (`room_id` +
+        `rate_plan_id`); the rate is mandatory, and `room_*` binds the price to
+        a specific room (prices are normally set per room+rate). Net, excluding
+        taxes/fees. Two pricing models:
+          * per_room  — one `price` per night (occupancy-independent);
+          * per_guest — `occupancy_prices[]`: absolute price per night for each
+            number of guests.
+        Child prices are configured separately (Child rates), not over ARI.
       properties:
+        room_code: { type: string, example: "SRV-ROOM-01" }
+        room_id:   { type: integer, format: int64, example: 4500 }
         rate_plan_code: { type: string, example: "STD-BB-FLEX" }
-        occupancy:
-          type: integer
-          description: >
-            Number of adults the price applies to. If omitted — applies to the
-            rate plan's standard occupancy.
-          example: 2
+        rate_plan_id:   { type: integer, format: int64, example: 13500 }
         date_from: { type: string, format: date }
         date_to:   { type: string, format: date, description: inclusive }
         days_of_week:
           $ref: '#/components/schemas/DaysOfWeek'
+        pricing_model:
+          type: string
+          enum: [per_room, per_guest]
+          description: Must match the room's pricing_model.
+          example: per_room
         price:
           type: number
           format: double
-          description: Price per night (net, excluding taxes/fees)
+          description: "per_room model: price per night for the room+rate"
           example: 120.00
+        occupancy_prices:
+          type: array
+          description: "per_guest model: absolute price per night for each guest count"
+          items:
+            type: object
+            required: [occupancy, price]
+            properties:
+              occupancy: { type: integer, description: number of guests (adults), example: 2 }
+              price: { type: number, format: double, example: 120.00 }
         currency: { type: string, example: "EUR" }
 
     RestrictionItem:
       type: object
-      required: [rate_plan_code, date_from, date_to]
+      required: [date_from, date_to]
+      description: >
+        Restrictions for a rate. Identify it by `rate_plan_code` and/or
+        `rate_plan_id` (at least one).
       properties:
         rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+        rate_plan_id:   { type: integer, format: int64, example: 13500 }
         date_from: { type: string, format: date }
         date_to:   { type: string, format: date, description: inclusive }
         days_of_week:
@@ -615,6 +719,11 @@ components:
 
     Reservation:
       type: object
+      description: >
+        A booking delivered to the partner. Room/rate are given both as our ids
+        (`room_id`/`rate_plan_id`) and the partner codes (`room_code`/
+        `rate_plan_code`). `primary_guest` always carries contacts; the optional
+        `guests[]` lists all guests bound to rooms when the hotel requires it.
       properties:
         reservation_id: { type: string, example: "UT-9F3A21" }
         property_id: { type: integer, format: int64, example: 123 }
@@ -627,14 +736,39 @@ components:
         checkout: { type: string, format: date }
         currency: { type: string, example: "EUR" }
         total_price: { type: number, format: double, example: 675.00 }
+        rate_type:
+          type: string
+          enum: [gross, net]
+          description: >
+            gross — price includes commission (see `commission`); net — already
+            net of commission.
+          example: net
+        commission:
+          type: string
+          description: >
+            Commission size in free text for GROSS rates (e.g. "15%" or
+            "101.25 EUR"); omitted/ignored for net rates.
+          example: null
         channel: { type: string, example: "web" }
+        special_request:
+          type: string
+          description: Free-text guest request (best effort, not guaranteed)
+          example: "Late arrival ~23:00, high floor if possible"
         rooms:
           type: array
           items:
             type: object
             properties:
-              room_code: { type: string, description: external code (after mapping), example: "SRV-ROOM-01" }
+              room_code: { type: string, description: partner code (after mapping), example: "SRV-ROOM-01" }
+              room_id: { type: integer, format: int64, example: 4500 }
               rate_plan_code: { type: string, example: "STD-BB-FLEX" }
+              rate_plan_id: { type: integer, format: int64, example: 13500 }
+              board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
+              is_refundable: { type: boolean, example: true }
+              cancellation_policy:
+                type: string
+                description: Cancellation terms in free text (non-refundable if not refundable)
+                example: "Free cancellation until 2026-07-08 18:00; then 1 night penalty"
               occupancy:
                 type: object
                 properties:
@@ -645,13 +779,54 @@ components:
                     example: [6, 8]
                   infants: { type: integer, example: 0 }
               price: { type: number, format: double, example: 675.00 }
-        guest:
+        primary_guest:
           type: object
+          description: Lead guest — always present, carries the contacts.
+          required: [last_name]
           properties:
-            first_name: { type: string }
-            last_name: { type: string }
-            email: { type: string, format: email }
-            country: { type: string, example: "UA" }
+            first_name: { type: string, example: "Ivan" }
+            last_name: { type: string, example: "Petrenko" }
+            email: { type: string, format: email, example: "ivan@example.com" }
+            phone: { type: string, example: "+380671234567" }
+            nationality: { type: string, description: ISO 3166-1 alpha-2, example: "UA" }
+        guests:
+          type: array
+          description: >
+            Optional full guest list (some hotels require every guest's name).
+            Each guest is bound to a room via `room_index` (0-based into
+            `rooms[]`). Omitted when only the lead guest is needed.
+          items:
+            type: object
+            properties:
+              first_name: { type: string }
+              last_name: { type: string }
+              type: { type: string, enum: [adult, child], example: adult }
+              room_index: { type: integer, description: "index into rooms[]", example: 0 }
+        payment:
+          type: object
+          description: >
+            Optional payment / guarantee details. `method` says HOW payment
+            was/will be made. Card data is PCI-sensitive — send only over the
+            agreed secure channel; usually tokenized/masked.
+          properties:
+            type:
+              type: string
+              enum: [guarantee, prepaid, deposit, pay_at_hotel]
+              example: guarantee
+            method:
+              type: string
+              description: How payment is/was made
+              example: "virtual credit card"
+            card:
+              type: object
+              description: Optional card for guarantee/payment (PCI-sensitive)
+              properties:
+                holder: { type: string, example: "IVAN PETRENKO" }
+                number: { type: string, description: PAN or token/masked, example: "411111******1111" }
+                expiry_month: { type: integer, example: 11 }
+                expiry_year: { type: integer, example: 2027 }
+                cvc: { type: string, example: "***" }
+                brand: { type: string, example: "VISA" }
 
     ConnectionRequest:
       type: object
@@ -719,27 +894,69 @@ components:
         reservation: { $ref: '#/components/schemas/Reservation' }
 
   examples:
-    AriFull:
-      summary: Availability + rates + restrictions in one message
+    AriPerRoom:
+      summary: Single property, price PER ROOM
       value:
-        message_uid: "yp-2026-07-01T10:00:00Z-000187"
+        message_uid: "ari-2026-07-01T10:00:00Z-000187"
         revision: 1719827400
         property_id: 123
         availability:
-          - room_code: "YP-DLX"
+          - room_code: "SRV-ROOM-01"
+            room_id: 4500
             date_from: "2026-07-01"
             date_to: "2026-07-31"
             units: 5
         rates:
-          - rate_plan_code: "YP-DLX-BB"
-            occupancy: 2
+          - room_code: "SRV-ROOM-01"
+            room_id: 4500
+            rate_plan_code: "STD-BB-FLEX"
+            rate_plan_id: 13500
             date_from: "2026-07-01"
             date_to: "2026-07-31"
+            pricing_model: per_room
             price: 120.00
             currency: "EUR"
         restrictions:
-          - rate_plan_code: "YP-DLX-BB"
+          - rate_plan_code: "STD-BB-FLEX"
+            rate_plan_id: 13500
             date_from: "2026-07-01"
             date_to: "2026-07-14"
             min_stay: 2
             closed_to_arrival: true
+    AriPerGuest:
+      summary: Single property, price PER GUEST (occupancy prices)
+      value:
+        message_uid: "ari-2026-07-01T10:05:00Z-000188"
+        revision: 1719827700
+        property_id: 123
+        rates:
+          - room_code: "SRV-ROOM-02"
+            room_id: 4501
+            rate_plan_code: "STD-RO-FLEX"
+            rate_plan_id: 13510
+            date_from: "2026-07-01"
+            date_to: "2026-07-31"
+            pricing_model: per_guest
+            occupancy_prices:
+              - { occupancy: 1, price: 80.00 }
+              - { occupancy: 2, price: 120.00 }
+              - { occupancy: 3, price: 150.00 }
+            currency: "EUR"
+    AriMultiProperty:
+      summary: Many properties in one message (items[])
+      value:
+        message_uid: "ari-2026-07-01T10:10:00Z-000190"
+        revision: 1719828000
+        items:
+          - property_id: 123
+            availability:
+              - { room_id: 4500, date_from: "2026-07-01", date_to: "2026-07-31", units: 5 }
+          - property_id: 456
+            rates:
+              - room_id: 8800
+                rate_plan_id: 22000
+                date_from: "2026-07-01"
+                date_to: "2026-07-31"
+                pricing_model: per_room
+                price: 99.00
+                currency: "EUR"

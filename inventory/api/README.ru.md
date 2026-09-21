@@ -66,14 +66,23 @@ Unit.Travel            ──reservations──►  PMS / CM        (pull или
 ## 4. Поток ARI (партнёр → Unit.Travel)
 
 Одно сообщение `POST /ari` может содержать любые из массивов `availability`,
-`rates`, `restrictions` (хотя бы один непустой). Пример — см. `openapi.ru.yaml`
-(`examples.AriFull`).
+`rates`, `restrictions` (хотя бы один непустой). Для **нескольких объектов** в
+одном сообщении используйте массив верхнего уровня `items[]` — каждый элемент
+несёт свой `property_id` со своими `availability`/`rates`/`restrictions`.
+Примеры — см. `openapi.ru.yaml` (`examples.AriPerRoom`, `AriPerGuest`,
+`AriMultiProperty`).
 
 - **availability** — «rooms to sell» на категорию (`room_code`) за диапазон
   дат. Хранится как аллотмент; доступность = `units` − наши брони.
-- **rates** — цена за ночь базового размещения по **взрослым** (`occupancy` =
-  число взрослых; нетто, без налогов). Детские цены в ARI **не передаются** —
-  это отдельный конфиг Child rates.
+- **rates** — цена за ночь, привязана к категории номера
+  (`room_code`/`room_id`) и опционально к конкретному тарифу
+  (`rate_plan_code`/`rate_plan_id`). Нетто, без налогов. Две модели цены:
+  - `per_room` — одна `price` за ночь независимо от размещения.
+  - `per_guest` — `occupancy_prices[]` с **абсолютной** ценой для каждого
+    взрослого размещения (напр. `{ "occupancy": 1, "price": 80 }`,
+    `{ "occupancy": 2, "price": 100 }`), а не множитель на человека.
+
+  Детские цены в ARI **не передаются** — это отдельный конфиг Child rates.
 - **restrictions** — `min_stay`/`max_stay`, `closed_to_arrival`/`_departure`,
   `stop_sell`, окна `min/max_advance_days`, `release_days`.
 - Диапазон дат — `date_from..date_to` **включительно**, опционально
@@ -113,7 +122,23 @@ failed | skipped` + `errors[]` (частичные ошибки по элеме�
 
 Бронь несёт **возраст детей** (`rooms[].occupancy.children_ages`) и `infants` —
 для корректного расчёта на стороне PMS/CM. Коды номера/тарифа в броне уже
-в ВАШИХ кодах (обратный маппинг).
+в ВАШИХ кодах (обратный маппинг); каждый номер также дублирует наши
+`room_id`/`rate_plan_id`, `board` (питание), `is_refundable` и
+`cancellation_policy`.
+
+Дополнительные поля брони:
+- **primary_guest** — основной гость: `first_name`/`last_name`, `email`,
+  `phone`, `nationality`.
+- **guests[]** — все гости, каждый привязан к номеру через `room_index`
+  (индекс в `rooms[]`). В одной броне может быть несколько гостей на несколько
+  номеров.
+- **special_request** — свободный текст пожелания гостя.
+- **rate_type** — `gross` или `net`; при `gross` поле `commission` описывает
+  комиссию, которую удерживает Unit.Travel.
+- **payment** — `type` (напр. `pay_at_hotel`, `prepaid`), `method` и
+  **опциональный** объект `card` (номер, держатель, срок, CVC). Данные карты
+  присутствуют только для сценариев гарантии картой/виртуальной карты; это
+  PCI-чувствительные данные.
 
 ## 6. Ошибки
 
@@ -153,4 +178,4 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 ---
 
 _Замечания по полям и сценариям — на стороне Unit.Travel:
-integrations@unit.travel._
+dev@unit.travel._

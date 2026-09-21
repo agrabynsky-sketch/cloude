@@ -68,14 +68,22 @@ ARI elements with an **unmapped** code are rejected (`422 unknown_*_code`).
 ## 4. ARI flow (partner → Unit.Travel)
 
 A single `POST /ari` message may carry any of the `availability`, `rates`,
-`restrictions` arrays (at least one non-empty). Example — see `openapi.en.yaml`
-(`examples.AriFull`).
+`restrictions` arrays (at least one non-empty). For **multiple properties** in
+one message, use the top-level `items[]` array — each entry carries its own
+`property_id` with its `availability`/`rates`/`restrictions`. Examples — see
+`openapi.en.yaml` (`examples.AriPerRoom`, `AriPerGuest`, `AriMultiProperty`).
 
 - **availability** — "rooms to sell" for a room category (`room_code`) over a
   date range. Stored as an allotment; availability = `units` − our bookings.
-- **rates** — per-night price of the base **adult** occupancy (`occupancy` =
-  number of adults; net, excluding taxes). Child prices are NOT sent over ARI —
-  they are a separate Child rates config.
+- **rates** — per-night price, linked to a room category (`room_code`/`room_id`)
+  and optionally a specific rate plan (`rate_plan_code`/`rate_plan_id`). Net,
+  excluding taxes. Two pricing models:
+  - `per_room` — one `price` per night regardless of occupancy.
+  - `per_guest` — `occupancy_prices[]` with an **absolute** price for each
+    adult occupancy (e.g. `{ "occupancy": 1, "price": 80 }`,
+    `{ "occupancy": 2, "price": 100 }`), not a per-person multiplier.
+
+  Child prices are NOT sent over ARI — they are a separate Child rates config.
 - **restrictions** — `min_stay`/`max_stay`, `closed_to_arrival`/`_departure`,
   `stop_sell`, booking windows `min/max_advance_days`, `release_days`.
 - Date range — `date_from..date_to` **inclusive**, optional `days_of_week`
@@ -116,7 +124,21 @@ Two options (both may be used):
 
 A reservation carries **child ages** (`rooms[].occupancy.children_ages`) and
 `infants` for correct pricing on the PMS/CM side. Room/rate codes in the
-reservation are already in YOUR codes (reverse mapping).
+reservation are already in YOUR codes (reverse mapping); each room also echoes
+our `room_id`/`rate_plan_id`, `board` (meal plan), `is_refundable` and
+`cancellation_policy`.
+
+Additional reservation fields:
+- **primary_guest** — lead guest with `first_name`/`last_name`, `email`,
+  `phone`, `nationality`.
+- **guests[]** — all guests, each bound to a room via `room_index` (index into
+  `rooms[]`). A message may carry several guests across several rooms.
+- **special_request** — free-text guest request.
+- **rate_type** — `gross` or `net`; when `gross`, `commission` describes the
+  commission Unit.Travel retains.
+- **payment** — `type` (e.g. `pay_at_hotel`, `prepaid`), `method`, and an
+  **optional** `card` object (PAN, holder, expiry, CVC). Card data is present
+  only for card-guarantee/virtual-card flows; treat it as PCI-sensitive.
 
 ## 6. Errors
 
@@ -156,4 +178,4 @@ JSON: `{ "code": "...", "message": "...", "details": [ { "path", "reason" } ] }`
 ---
 
 _Field- and scenario-level questions — on the Unit.Travel side:
-integrations@unit.travel._
+dev@unit.travel._
