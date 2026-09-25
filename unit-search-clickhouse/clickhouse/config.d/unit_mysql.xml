@@ -1,0 +1,18 @@
+<!--
+  Подключение ClickHouse -> MySQL (source of truth) для прямой загрузки без PHP.
+  Положить в /etc/clickhouse-server/config.d/unit_mysql.xml и перезапустить clickhouse-server
+  (или подождать автоперечитывания конфига).
+  Используется так:  SELECT ... FROM mysql(unit_mysql, table = 'hotels')
+  Пользователь MySQL нужен только с правами SELECT на таблицы hotels*, лучше на реплике.
+-->
+<clickhouse>
+    <named_collections>
+        <unit_mysql>
+            <host>mysql.internal</host>
+            <port>3306</port>
+            <database>tezdynamix</database>
+            <user>search_sync</user>
+            <password>change_me</password>
+        </unit_mysql>
+    </named_collections>
+</clickhouse>

@@ -1,0 +1,31 @@
+<?php
+// Скопируйте в search-sync.config.php и заполните.
+return array(
+    // где лежит Zend Framework 1 (library/), если его нет в include_path
+    'include_path' => array('/var/www/unit/library'),
+
+    // MySQL — source of truth (лучше реплика для чтения, очередь пишется в мастер)
+    'mysql' => array(
+        'host'     => 'mysql.internal',
+        'port'     => 3306,
+        'username' => 'search_sync',
+        'password' => 'change_me',
+        'dbname'   => 'tezdynamix',
+        'charset'  => 'utf8',
+    ),
+
+    // ClickHouse — пишущий пользователь, HTTP-транспорт
+    'clickhouse' => array(
+        'transport' => 'http',
+        'host'      => 'clickhouse.internal',
+        'port'      => 8123,
+        'username'  => 'search_writer',
+        'password'  => 'change_me_writer',
+        'dbname'    => 'unit_search',
+        'timeout'   => 300,
+        'compress'  => true,
+    ),
+
+    'batch_hotels' => 10,
+    'timezone'     => 'Europe/Kiev',
+);
