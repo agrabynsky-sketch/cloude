@@ -5,7 +5,7 @@
  */
 
 /**
- * Эталон: доступные рум-рейты отеля на проживание. Возвращает rate_room_id => array('total' => копейки, 'nightly' => array(...)).
+ * Эталон: доступные рум-рейты отеля на проживание. Возвращает id_rate_room => array('total' => копейки, 'nightly' => array(...)).
  */
 function referenceRates($db, $hotelId, $checkin, $nights, $guests, $today, $channel = 1) {
     $days = array();

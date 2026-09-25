@@ -91,13 +91,13 @@ switch($cmd) {
         break;
     case 'optimize':
         $t = microtime(true);
-        $clickhouse->execute('OPTIMIZE TABLE search_stay FINAL');
+        $clickhouse->execute('OPTIMIZE TABLE hotels_search_stay FINAL');
         $log(sprintf('optimize done in %.1f s', microtime(true) - $t));
         break;
     case 'stats':
         print_r($queue->stats());
-        print_r($clickhouse->fetchRow('SELECT count() AS rows_total, uniqExact(hotel_id) AS hotels, uniqExact(rate_room_id) AS rate_rooms,
-            min(d) AS first_date, max(d) AS last_date FROM search_stay FINAL'));
+        print_r($clickhouse->fetchRow('SELECT count() AS rows_total, uniqExact(id_hotel) AS hotels, uniqExact(id_rate_room) AS rate_rooms,
+            min(d) AS first_date, max(d) AS last_date FROM hotels_search_stay FINAL'));
         break;
     default:
         echo "usage: php search-sync.php worker|full|enqueue-all|hotels <ids>|enqueue <id>|optimize|stats\n";

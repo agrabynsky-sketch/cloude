@@ -19,55 +19,56 @@
 
 CREATE DATABASE IF NOT EXISTS unit_search;
 
-CREATE TABLE IF NOT EXISTS unit_search.search_stay
+CREATE TABLE IF NOT EXISTS unit_search.hotels_search_stay
 (
-    d               Date,
-    hotel_id        UInt32,
-    rate_room_id    UInt32,                 -- hotels_rates_rooms.id
-    room_id         UInt32,                 -- hotels_rooms.id
-    rate_id         UInt32,                 -- hotels_rates.id
-    parent_rate_id  UInt32,                 -- hotels_rates.id_parent (0 = самостоятельный тариф)
+    d                Date,
+    id_hotel         UInt32,
+    id_rate_room     UInt32,                -- hotels_rates_rooms.id
+    id_room          UInt32,                -- hotels_rooms.id
+    id_rate          UInt32,                -- hotels_rates.id
+    id_parent        UInt32,                -- hotels_rates.id_parent (0 = самостоятельный тариф)
 
     -- поля отеля (денормализованы, чтобы фильтровать без JOIN)
-    country_id      UInt32,
-    region_id       UInt32,
-    city_id         UInt32,
-    stars           UInt8,
-    currency_id     UInt32,
+    id_country       UInt32,
+    id_region        UInt32,
+    id_city          UInt32,
+    stars            UInt8,
+    id_currency      UInt32,
 
     -- поля тарифа
-    board_id        UInt8,                  -- hotels_board_types.id
-    refundable      UInt8,                  -- 1 = есть политика отмены (id_cancel_policy <> 0)
-    channel_mask    UInt32,                 -- биты hotels_sales_channels.bit
-    is_public       UInt8,                  -- visibility = 'public'
-    access_group_id UInt32,
+    id_board_type    UInt8,                 -- hotels_board_types.id
+    id_cancel_policy UInt32,                -- hotels_rates.id_cancel_policy (0 = невозвратный)
+    refundable       UInt8,                 -- 1 = есть политика отмены (id_cancel_policy <> 0)
+    channel_mask     UInt32,                -- биты hotels_sales_channels.bit
+    is_public        UInt8,                 -- visibility = 'public'
+    id_access_group  UInt32,                -- hotels_rates.access_group_id
 
     -- поля номера
-    room_type_id    UInt32,
-    max_guests      UInt8,
-    gmask           UInt16,                 -- бит g (1..8) = продаётся на g гостей
+    id_room_type     UInt32,                -- hotels_rooms.id_type
+    max_guests       UInt8,
+    gmask            UInt16,                -- бит g (1..8) = продаётся на g гостей
 
     -- нарастающие суммы по ночам ДО даты d (цены в минимальных единицах валюты отеля)
     c1 UInt64, c2 UInt64, c3 UInt64, c4 UInt64, c5 UInt64, c6 UInt64, c7 UInt64, c8 UInt64,
-    k               UInt16,                 -- число продаваемых ночей до d
+    k                UInt16,                -- число продаваемых ночей до d
 
     -- атрибуты самой ночи d
-    avail           UInt16,                 -- свободно номеров в ночь d (0 = ночь не продаётся)
-    cta             UInt8,                  -- closed to arrival в дату d
-    ctd             UInt8,                  -- closed to departure в дату d
-    min_los         UInt16,                 -- для заезда в дату d (1 = нет ограничения)
-    max_los         UInt16,                 -- 999 = нет ограничения
-    min_adv         UInt16,                 -- дней до заезда, минимум (0 = нет)
-    max_adv         UInt16,                 -- 9999 = нет ограничения
+    avail            UInt16,                -- свободно номеров в ночь d (0 = ночь не продаётся)
+    cta              UInt8,                 -- closed to arrival в дату d
+    ctd              UInt8,                 -- closed to departure в дату d
+    min_los          UInt16,                -- для заезда в дату d (1 = нет ограничения)
+    max_los          UInt16,                -- 999 = нет ограничения
+    min_adv          UInt16,                -- дней до заезда, минимум (0 = нет)
+    max_adv          UInt16,                -- 9999 = нет ограничения
 
-    ver             UInt64,                 -- версия сборки отеля (микросекунды)
-    is_deleted      UInt8 DEFAULT 0
+    ver              UInt64,                -- версия сборки отеля (микросекунды)
+    is_deleted       UInt8 DEFAULT 0
 )
 ENGINE = ReplacingMergeTree(ver, is_deleted)
-ORDER BY (d, hotel_id, rate_room_id)
+ORDER BY (d, id_hotel, id_rate_room)
 TTL d + INTERVAL 1 DAY DELETE
 SETTINGS index_granularity = 1024;
 
 -- Важно: порядок сортировки начинается с d. Поиск всегда фильтрует d IN (checkin, checkout),
--- поэтому ClickHouse читает только гранулы двух дат. С ORDER BY (hotel_id, d, ...) запрос читал почти всю таблицу.
+-- поэтому ClickHouse читает только гранулы двух дат. С ORDER BY (id_hotel, d, ...) запрос читал почти всю таблицу.
 -- index_granularity = 1024 (вместо 8192): карточка отеля читает ~22 тыс. строк вместо ~180 тыс., поиск тоже чуть быстрее.

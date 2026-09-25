@@ -48,7 +48,7 @@ abstract class Search_Model_Abstract {
 
     /**
      * Список дат для d IN (...) — быстрее, чем BETWEEN, когда запрос по одному/нескольким отелям:
-     * ключ сортировки (d, hotel_id, ...) отсекает гранулы по hotel_id для каждой даты отдельно.
+     * ключ сортировки (d, id_hotel, ...) отсекает гранулы по id_hotel для каждой даты отдельно.
      * @return string "'2026-12-10','2026-12-11',..."
      */
     protected function _dateList($from, $to, $maxDays = 400) {

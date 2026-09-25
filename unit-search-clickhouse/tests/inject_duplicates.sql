@@ -7,7 +7,7 @@
 --   php tests/verify_reference.php 200 1 <first>-<first+99>
 -- Дубли удаляются вместе с демо-данными (mysql/03_demo_cleanup.sql).
 -- =====================================================================
-SET @h1 = (SELECT id_from FROM search_demo_registry WHERE entity = 'hotels');
+SET @h1 = (SELECT id_from FROM hotels_search_demo_registry WHERE entity = 'hotels');
 SET @h2 = @h1 + 99;
 
 -- цены: ещё одна (более новая) строка на ту же ночь — цена +7, четверть из них закрыта

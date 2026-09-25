@@ -1,7 +1,7 @@
 <?php
 /**
  * Сквозной тест синхронизации: изменение в MySQL -> очередь -> воркер -> ClickHouse == эталон.
- *   php tests/queue_flow.php [hotel_id]
+ *   php tests/queue_flow.php [id_hotel]
  * Все изменения в MySQL в конце откатываются, отель пересобирается обратно.
  */
 require __DIR__ . '/bootstrap.php';
@@ -15,7 +15,7 @@ if(isset($argv[1])) {
     $hotelId = (int)$argv[1];
 } else {
     // демо-отель, у которого на эти даты доступно побольше рум-рейтов (чтобы тест что-то проверял)
-    $first = (int)$mysql->fetchOne("SELECT id_from FROM search_demo_registry WHERE entity = 'hotels'");
+    $first = (int)$mysql->fetchOne("SELECT id_from FROM hotels_search_demo_registry WHERE entity = 'hotels'");
     for($hotelId = $first; $hotelId < $first + 100; $hotelId++) {
         if(count(referenceRates($mysql, $hotelId, $checkin, $nights, 2, $today)) >= 6) {
             break;
@@ -30,7 +30,7 @@ $failures = 0;
 function current_rates(Search_Model_Stay $model, $hotelId, array $stay) {
     $got = array();
     foreach($model->hotelRates($hotelId, $stay) as $row) {
-        $got[$row['rate_room_id']] = $row['price_minor'];
+        $got[$row['id_rate_room']] = $row['price_minor'];
     }
     ksort($got);
     return $got;
@@ -97,7 +97,7 @@ try {
     };
     sync($queue, $worker, $hotelId, 'rate');
     check('2. BB rate deactivated -> removed from cache', expected_rates($mysql, $hotelId, $stay, $today), current_rates($model, $hotelId, $stay), $failures);
-    printf("   rows of BB left in cache (FINAL): %d\n", $chHttp->fetchOne('SELECT count() FROM search_stay FINAL WHERE rate_id = ' . (int)$bb));
+    printf("   rows of BB left in cache (FINAL): %d\n", $chHttp->fetchOne('SELECT count() FROM hotels_search_stay FINAL WHERE id_rate = ' . (int)$bb));
 
     // 3. BAR стал private -> пропадает из публичного поиска, хотя старые версии строк ещё лежат в частях таблицы
     $mysql->query("UPDATE hotels_rates SET visibility = 'private' WHERE id = ?", array($bar));
@@ -131,7 +131,7 @@ try {
         $mysql->query('UPDATE hotels SET active = 1 WHERE id = ?', array($hotelId));
     };
     sync($queue, $worker, $hotelId, 'hotel');
-    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'guests' => 2, 'hotel_ids' => array($hotelId)));
+    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'guests' => 2, 'id_hotel' => array($hotelId)));
     check('5. hotel deactivated -> not found by search()', 0, $res['total'], $failures);
 
     // 6. защита очереди: изменение во время сборки не теряется
@@ -139,7 +139,7 @@ try {
     $claimed = $queue->claim('test-token', 10);
     $queue->push($hotelId, 'changed-during-build');
     $queue->done('test-token', $claimed);
-    $left = $mysql->fetchOne('SELECT COUNT(*) FROM search_sync_queue WHERE hotel_id = ?', array($hotelId));
+    $left = $mysql->fetchOne('SELECT COUNT(*) FROM hotels_search_sync_queue WHERE id_hotel = ?', array($hotelId));
     check('6. change during build keeps hotel in queue', 1, (int)$left, $failures);
 
     // 7. откат шагов 1-5
@@ -149,7 +149,7 @@ try {
 
     // 8. дневная цена на 3 гостей (hotels_rates_occupancy_daily) для номера с pricing_model = 2
     $stay3 = array('checkin' => $checkin, 'nights' => $nights, 'guests' => 3);
-    $first = (int)$mysql->fetchOne("SELECT id_from FROM search_demo_registry WHERE entity = 'hotels'");
+    $first = (int)$mysql->fetchOne("SELECT id_from FROM hotels_search_demo_registry WHERE entity = 'hotels'");
     $target = null;
     for($h = $first + 1; $h < $first + 200 && !$target; $h += 2) {           // у чётных демо-отелей есть pricing_model = 2
         foreach(referenceRates($mysql, $h, $checkin, $nights, 3, $today) as $rrId => $v) {

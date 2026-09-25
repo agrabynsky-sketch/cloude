@@ -3,9 +3,9 @@
 /**
  * Пример ZF1-контроллера поиска поверх ClickHouse (JSON API).
  *
- *   GET /search/hotels?checkin=2026-12-10&nights=7&guests=2&region_id=243836&stars=4,5&limit=30&offset=0
- *   GET /search/hotels?checkin=2026-12-10&checkout=2026-12-17&guests=2&hotel_ids=1005,1006,1007
- *   GET /search/hotel?id=1005&checkin=2026-12-10&nights=7&guests=2
+ *   GET /search/hotels?checkin=2026-12-10&nights=7&guests=2&id_region=243836&stars=4,5&limit=30&offset=0
+ *   GET /search/hotels?checkin=2026-12-10&checkout=2026-12-17&guests=2&id_hotel=1005,1006,1007
+ *   GET /search/hotel?id_hotel=1005&checkin=2026-12-10&nights=7&guests=2
  *
  * Клиент ClickHouse настраивается один раз в Bootstrap (см. README, раздел "Подключение в приложении"):
  *   Search_ClickHouse_Client::setDefault(Search_ClickHouse_Client::factory($config->clickhouse));
@@ -20,13 +20,14 @@ class SearchController extends Zend_Controller_Action {
 
     public function hotelsAction() {
         $criteria = $this->_stayCriteria();
-        foreach(array('region_id', 'country_id', 'city_id', 'channel', 'refundable', 'price_min', 'price_max', 'order', 'limit', 'offset') as $k) {
+        foreach(array('channel', 'refundable', 'price_min', 'price_max', 'order', 'limit', 'offset') as $k) {
             $v = $this->_getParam($k);
             if(!is_null($v) && '' !== $v) {
                 $criteria[$k] = $v;
             }
         }
-        foreach(array('hotel_ids', 'stars', 'board_ids') as $k) {
+        // списки через запятую: id_hotel=1005,1006&id_region=243836&stars=4,5&id_board_type=4,7
+        foreach(array('id_hotel', 'id_region', 'id_country', 'id_city', 'stars', 'id_board_type') as $k) {
             $v = $this->_getParam($k);
             if(!empty($v)) {
                 $criteria[$k] = array_map('intval', is_array($v) ? $v : explode(',', $v));
@@ -38,10 +39,10 @@ class SearchController extends Zend_Controller_Action {
     }
 
     public function hotelAction() {
-        $hotelId = (int)$this->_getParam('id');
+        $hotelId = (int)$this->_getParam('id_hotel');
         $criteria = $this->_stayCriteria();
         $this->_respond(function() use ($hotelId, $criteria) {
-            return array('hotel_id' => $hotelId, 'items' => Search_Model_Stay::getInstance()->hotelRates($hotelId, $criteria));
+            return array('id_hotel' => $hotelId, 'items' => Search_Model_Stay::getInstance()->hotelRates($hotelId, $criteria));
         });
     }
 

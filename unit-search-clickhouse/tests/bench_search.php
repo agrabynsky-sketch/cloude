@@ -14,17 +14,17 @@ for($i = 0; $i < $runs; $i++) {
 }
 $cases = array(
     'search: region (~1000 hotels), 7 nights, 2 guests' => function(Search_Model_Stay $m, $d) {
-        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'region_id' => 243836, 'limit' => 30));
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'id_region' => 243836, 'limit' => 30));
     },
-    'search: 1000 hotel_ids, 7 nights, 2 guests' => function(Search_Model_Stay $m, $d) use ($hotelIds) {
-        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'hotel_ids' => $hotelIds, 'limit' => 30));
+    'search: 1000 hotels by id_hotel, 7 nights, 2 guests' => function(Search_Model_Stay $m, $d) use ($hotelIds) {
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'id_hotel' => $hotelIds, 'limit' => 30));
     },
     'search: region, 14 nights, 3 guests, 4-5*, BB/HB, refundable' => function(Search_Model_Stay $m, $d) {
-        return $m->search(array('checkin' => $d, 'nights' => 14, 'guests' => 3, 'region_id' => 243836, 'stars' => array(4, 5),
-            'board_ids' => array(4, 7), 'refundable' => 1, 'limit' => 30));
+        return $m->search(array('checkin' => $d, 'nights' => 14, 'guests' => 3, 'id_region' => 243836, 'stars' => array(4, 5),
+            'id_board_type' => array(4, 7), 'refundable' => 1, 'limit' => 30));
     },
     'search: region, all results (limit 1000)' => function(Search_Model_Stay $m, $d) {
-        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'region_id' => 243836, 'limit' => 1000));
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'id_region' => 243836, 'limit' => 1000));
     },
     'hotelRates: one hotel, 7 nights, 2 guests' => function(Search_Model_Stay $m, $d) use ($hotelIds) {
         return $m->hotelRates($hotelIds[mt_rand(0, count($hotelIds) - 1)], array('checkin' => $d, 'nights' => 7, 'guests' => 2));

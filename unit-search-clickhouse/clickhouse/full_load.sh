@@ -18,8 +18,8 @@ while [ $i -lt "$CHUNKS" ]; do
     $CH --param_chunks="$CHUNKS" --param_chunk="$i" --multiquery < "$DIR/03b_build_chunk.sql"
     i=$((i + 1))
 done
-$CH --query "SELECT 'built', count(), uniqExact(hotel_id), uniqExact(rate_room_id) FROM unit_search.search_stay_new"
+$CH --query "SELECT 'built', count(), uniqExact(id_hotel), uniqExact(id_rate_room) FROM unit_search.hotels_search_stay_new"
 $CH --multiquery < "$DIR/04_full_load_swap.sql"
 # склеить части: FINAL-запросы быстрее, когда у каждой строки одна версия (~4 с на 10 млн строк)
-$CH --query "OPTIMIZE TABLE unit_search.search_stay FINAL"
+$CH --query "OPTIMIZE TABLE unit_search.hotels_search_stay FINAL"
 echo "full load done"

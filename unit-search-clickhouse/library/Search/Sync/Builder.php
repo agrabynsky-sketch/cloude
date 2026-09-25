@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Сборщик поискового кэша: MySQL (source of truth) -> строки unit_search.search_stay.
+ * Сборщик поискового кэша: MySQL (source of truth) -> строки unit_search.hotels_search_stay.
  *
  * Отель собирается ЦЕЛИКОМ: все его активные рум-рейты × все даты горизонта [start; start + HORIZON_DAYS].
  * Бизнес-правила (одинаковые с clickhouse/03_full_load_from_mysql.sql и tests/verify_reference.php):
@@ -44,10 +44,10 @@ class Search_Sync_Builder {
     protected $_days = array();   // 'Y-m-d' => index
 
     public static $columns = array(
-        'd', 'hotel_id', 'rate_room_id', 'room_id', 'rate_id', 'parent_rate_id',
-        'country_id', 'region_id', 'city_id', 'stars', 'currency_id',
-        'board_id', 'refundable', 'channel_mask', 'is_public', 'access_group_id',
-        'room_type_id', 'max_guests', 'gmask',
+        'd', 'id_hotel', 'id_rate_room', 'id_room', 'id_rate', 'id_parent',
+        'id_country', 'id_region', 'id_city', 'stars', 'id_currency',
+        'id_board_type', 'id_cancel_policy', 'refundable', 'channel_mask', 'is_public', 'id_access_group',
+        'id_room_type', 'max_guests', 'gmask',
         'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'k',
         'avail', 'cta', 'ctd', 'min_los', 'max_los', 'min_adv', 'max_adv',
         'ver', 'is_deleted',
@@ -85,7 +85,7 @@ class Search_Sync_Builder {
      * @param array $hotelIds
      * @param int $ver версия сборки (одна на пачку)
      * @param callable $emit
-     * @return array hotel_id => array(rate_room_id, ...) — какие рум-рейты собраны (для tombstone удалённых)
+     * @return array id_hotel => array(id_rate_room, ...) — какие рум-рейты собраны (для tombstone удалённых)
      */
     public function build(array $hotelIds, $ver, $emit) {
         $hotelIds = array_values(array_unique(array_map('intval', $hotelIds)));
@@ -110,7 +110,7 @@ class Search_Sync_Builder {
             return $built;
         }
         $rateRooms = array();
-        $byRateRoom = array();   // rate_id => room_id => rate_room_id
+        $byRateRoom = array();   // id_rate => id_room => id_rate_room
         foreach($db->fetchAll('SELECT id, id_rate, id_room FROM hotels_rates_rooms WHERE id_room IN (' . implode(',', array_keys($rooms)) . ')') as $row) {
             if(!isset($rates[$row['id_rate']]) || $rates[$row['id_rate']]['id_hotel'] != $rooms[$row['id_room']]['id_hotel']) {
                 continue;
@@ -193,7 +193,7 @@ class Search_Sync_Builder {
             $static = array(
                 (int)$room['id_hotel'], (int)$rrId, (int)$rr['id_room'], (int)$rr['id_rate'], $parentId,
                 (int)$hotel['id_country'], (int)$hotel['id_region'], (int)$hotel['id_city'], (int)$hotel['stars'], (int)$hotel['id_currency'],
-                (int)$rate['id_board_type'], empty($rate['id_cancel_policy']) ? 0 : 1, (int)$rate['channel_mask'],
+                (int)$rate['id_board_type'], (int)$rate['id_cancel_policy'], empty($rate['id_cancel_policy']) ? 0 : 1, (int)$rate['channel_mask'],
                 'public' == $rate['visibility'] ? 1 : 0, (int)$rate['access_group_id'],
                 (int)$room['id_type'], $maxGuests, $gmask,
             );
@@ -258,7 +258,7 @@ class Search_Sync_Builder {
      * Tombstone-строки (is_deleted = 1) для рум-рейтов, которых больше нет в MySQL.
      */
     public function buildTombstones($hotelId, array $rateRoomIds, $ver, $emit) {
-        $zeros = implode("\t", array_fill(0, count(self::$columns) - 5, 0));   // everything between rate_room_id and ver
+        $zeros = implode("\t", array_fill(0, count(self::$columns) - 5, 0));   // everything between id_rate_room and ver
         foreach($rateRoomIds as $rrId) {
             foreach($this->_days as $date => $i) {
                 call_user_func($emit, $date . "\t" . (int)$hotelId . "\t" . (int)$rrId . "\t" . $zeros . "\t" . $ver . "\t1\n");

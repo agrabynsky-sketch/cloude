@@ -24,21 +24,21 @@ function dispatch($uri) {
 
 $checkin = date('Y-m-d', strtotime('+60 day'));
 $fail = 0;
-list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&guests=2&region_id=243836&stars=4,5&limit=5");
+list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&guests=2&id_region=243836&stars=4,5&limit=5");
 printf("GET /search/hotels (region, 4-5*)  -> HTTP %d, total=%d, items=%d, first=%s, %.1f ms\n", $code, $body['total'], count($body['items']),
     json_encode($body['items'][0]), $body['ms']);
 $fail += (200 == $code && 5 == count($body['items'])) ? 0 : 1;
 
-$hotelId = $body['items'][0]['hotel_id'];
-list($code, $body) = dispatch("/search/hotel?id=$hotelId&checkin=$checkin&nights=7&guests=2");
-printf("GET /search/hotel?id=%d            -> HTTP %d, room-rates=%d, cheapest=%s\n", $hotelId, $code, count($body['items']), json_encode($body['items'][0]));
+$hotelId = $body['items'][0]['id_hotel'];
+list($code, $body) = dispatch("/search/hotel?id_hotel=$hotelId&checkin=$checkin&nights=7&guests=2");
+printf("GET /search/hotel?id_hotel=%d      -> HTTP %d, room-rates=%d, cheapest=%s\n", $hotelId, $code, count($body['items']), json_encode($body['items'][0]));
 $fail += (200 == $code && count($body['items']) > 0) ? 0 : 1;
 
-list($code, $body) = dispatch("/search/hotels?checkin=2020-01-01&nights=7&guests=2&region_id=243836");
+list($code, $body) = dispatch("/search/hotels?checkin=2020-01-01&nights=7&guests=2&id_region=243836");
 printf("GET /search/hotels (past date)      -> HTTP %d, %s\n", $code, json_encode($body));
 $fail += 400 == $code ? 0 : 1;
 
-list($code, $body) = dispatch("/search/hotels?checkin=abc&nights=7&guests=2&region_id=243836");
+list($code, $body) = dispatch("/search/hotels?checkin=abc&nights=7&guests=2&id_region=243836");
 printf("GET /search/hotels (bad date)       -> HTTP %d, %s\n", $code, json_encode($body));
 $fail += 400 == $code ? 0 : 1;
 
@@ -47,7 +47,7 @@ Search_ClickHouse_Client::setDefault(Search_ClickHouse_Client::factory(array('ho
 $ref = new ReflectionProperty('Search_Model_Abstract', '_instances');
 $ref->setAccessible(true);
 $ref->setValue(array());
-list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&guests=2&region_id=243836");
+list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&guests=2&id_region=243836");
 printf("GET /search/hotels (CH down)        -> HTTP %d, %s\n", $code, json_encode($body));
 $fail += 503 == $code ? 0 : 1;
 

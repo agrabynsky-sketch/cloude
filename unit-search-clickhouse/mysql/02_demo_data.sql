@@ -19,7 +19,7 @@
 -- Безопасность для рабочей базы:
 --   * id берутся от MAX(id) + 1000 каждой таблицы (без больших скачков AUTO_INCREMENT);
 --   * вставки идут пачками по 50 отелей (короткие транзакции для репликации/Galera);
---   * диапазоны id записываются в search_demo_registry, удаление: mysql/03_demo_cleanup.sql;
+--   * диапазоны id записываются в hotels_search_demo_registry, удаление: mysql/03_demo_cleanup.sql;
 --   * повторный запуск без очистки остановится с ошибкой.
 --   Сначала запускайте на копии/стейдже.
 --
@@ -28,7 +28,7 @@
 -- Время:   ~3-6 минут на 2000 отелей (≈5 млн строк цен, ≈2.3 млн строк наличия)
 -- =====================================================================
 
-CREATE TABLE IF NOT EXISTS search_demo_registry (
+CREATE TABLE IF NOT EXISTS hotels_search_demo_registry (
   entity     VARCHAR(32) NOT NULL,
   id_from    BIGINT      NOT NULL,
   id_to      BIGINT      NOT NULL,
@@ -37,18 +37,18 @@ CREATE TABLE IF NOT EXISTS search_demo_registry (
   PRIMARY KEY (entity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
-DROP PROCEDURE IF EXISTS search_demo_generate;
+DROP PROCEDURE IF EXISTS hotels_search_demo_generate;
 
 DELIMITER $$
 
-CREATE PROCEDURE search_demo_generate(IN p_hotels INT, IN p_days INT)
+CREATE PROCEDURE hotels_search_demo_generate(IN p_hotels INT, IN p_days INT)
 BEGIN
   DECLARE v_hb, v_rb, v_tb, v_rrb BIGINT;
   DECLARE v_from INT DEFAULT 1;
   DECLARE v_chunk INT DEFAULT 50;
   DECLARE v_start DATE DEFAULT CURDATE();
 
-  IF (SELECT COUNT(*) FROM search_demo_registry) > 0 THEN
+  IF (SELECT COUNT(*) FROM hotels_search_demo_registry) > 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Demo data already exists. Run 03_demo_cleanup.sql first.';
   END IF;
   IF p_hotels < 1 OR p_hotels > 9999 OR p_days < 1 OR p_days > 730 THEN
@@ -56,11 +56,11 @@ BEGIN
   END IF;
 
   -- ---------- helper: sequence 0..9999
-  DROP TABLE IF EXISTS search_demo_seq;
-  CREATE TABLE search_demo_seq (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
-  INSERT INTO search_demo_seq VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
-  INSERT INTO search_demo_seq SELECT a.n * 10 + b.n FROM search_demo_seq a, search_demo_seq b WHERE a.n * 10 + b.n >= 10;
-  INSERT INTO search_demo_seq SELECT a.n * 100 + b.n FROM search_demo_seq a, search_demo_seq b
+  DROP TABLE IF EXISTS hotels_search_demo_seq;
+  CREATE TABLE hotels_search_demo_seq (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+  INSERT INTO hotels_search_demo_seq VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+  INSERT INTO hotels_search_demo_seq SELECT a.n * 10 + b.n FROM hotels_search_demo_seq a, hotels_search_demo_seq b WHERE a.n * 10 + b.n >= 10;
+  INSERT INTO hotels_search_demo_seq SELECT a.n * 100 + b.n FROM hotels_search_demo_seq a, hotels_search_demo_seq b
     WHERE a.n < 100 AND b.n < 100 AND a.n * 100 + b.n >= 100;
 
   -- ---------- id bases: gap of 1000 after current max, so live inserts do not collide
@@ -70,7 +70,7 @@ BEGIN
   SELECT IFNULL(MAX(id), 0) + 1000 INTO v_rrb FROM hotels_rates_rooms;
 
   -- registry first: a second run fails on PRIMARY KEY before touching data
-  INSERT INTO search_demo_registry (entity, id_from, id_to, start_date, created) VALUES
+  INSERT INTO hotels_search_demo_registry (entity, id_from, id_to, start_date, created) VALUES
     ('hotels',             v_hb + 1,  v_hb + p_hotels,       v_start, NOW()),
     ('hotels_rooms',       v_rb + 1,  v_rb + p_hotels * 5,   v_start, NOW()),
     ('hotels_rates',       v_tb + 1,  v_tb + p_hotels * 4,   v_start, NOW()),
@@ -88,7 +88,7 @@ BEGIN
          IF(s.n <= p_hotels / 2, 48.36, 36.48) + (CRC32(CONCAT('lat', s.n)) % 2000) / 10000,
          IF(s.n <= p_hotels / 2, 24.39, 30.52) + (CRC32(CONCAT('lng', s.n)) % 2000) / 10000,
          IF(s.n <= p_hotels / 2, 'Europe/Kiev', 'Europe/Istanbul'), '14:00', '12:00', 1, 1, 1, 1, 1
-  FROM search_demo_seq s WHERE s.n BETWEEN 1 AND p_hotels;
+  FROM hotels_search_demo_seq s WHERE s.n BETWEEN 1 AND p_hotels;
 
   -- ---------- rooms: 3..5 per hotel
   INSERT INTO hotels_rooms (id, title, internal_name, id_hotel, id_type, allotment, square, base_occupancy, max_occupancy,
@@ -108,7 +108,7 @@ BEGIN
          IF(r.n >= 3 AND h.n % 2 = 0, 2, 1),
          'high', 1,
          '{"beds":[{"type":"7","count":"1"}],"bathrooms":[{"private":"1","inside":"1"}]}'
-  FROM search_demo_seq h JOIN search_demo_seq r
+  FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3;
 
   -- ---------- rates: 3..4 per hotel
@@ -127,42 +127,42 @@ BEGIN
          IF(t.n = 4, 3, 31),
          'public', 0, 0, 0, 1,
          ELT(t.n, '{"board":["RO"]}', '{"board":["RO"]}', '{"board":["BF"]}', '{"board":["BF","DN"]}')
-  FROM search_demo_seq h JOIN search_demo_seq t
+  FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq t
   WHERE h.n BETWEEN 1 AND p_hotels AND t.n BETWEEN 1 AND 3 + h.n % 2;
 
   -- ---------- rate-rooms: every rate x every room of the hotel
   INSERT INTO hotels_rates_rooms (id, id_rate, id_room)
   SELECT v_rrb + (h.n - 1) * 20 + (r.n - 1) * 4 + t.n, v_tb + (h.n - 1) * 4 + t.n, v_rb + (h.n - 1) * 5 + r.n
-  FROM search_demo_seq h JOIN search_demo_seq r JOIN search_demo_seq t
+  FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r JOIN hotels_search_demo_seq t
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3 AND t.n BETWEEN 1 AND 3 + h.n % 2;
 
   -- ---------- helper: rate-room facts used by the price generator
-  DROP TABLE IF EXISTS search_demo_rr;
-  CREATE TABLE search_demo_rr (
+  DROP TABLE IF EXISTS hotels_search_demo_rate_rooms;
+  CREATE TABLE hotels_search_demo_rate_rooms (
     id INT NOT NULL PRIMARY KEY, h INT NOT NULL, r INT NOT NULL, t INT NOT NULL,
-    room_id INT NOT NULL, rate_id INT NOT NULL, is_ua TINYINT NOT NULL, pf DECIMAL(12,4) NOT NULL,
+    id_room INT NOT NULL, id_rate INT NOT NULL, is_ua TINYINT NOT NULL, pf DECIMAL(12,4) NOT NULL,
     KEY (h)
   ) ENGINE=InnoDB;
-  INSERT INTO search_demo_rr
+  INSERT INTO hotels_search_demo_rate_rooms
   SELECT rr.id, h.n, r.n, t.n, rr.id_room, rr.id_rate, h.n <= p_hotels / 2,
          IF(h.n <= p_hotels / 2, 2000, 90)                                  -- currency level (UAH / EUR)
          * ELT(2 + h.n % 4 - 1, 0.6, 0.8, 1.0, 1.5)                          -- stars 2..5
          * ELT(r.n, 1.0, 1.0, 1.35, 1.6, 2.2)                                -- room type
          * ELT(t.n, 1.0, 1.0, 1.12, 1.3)                                     -- board
          * (0.8 + (CRC32(CONCAT('hv', h.n)) % 40) / 100)                     -- hotel variation
-  FROM search_demo_seq h JOIN search_demo_seq r JOIN search_demo_seq t
+  FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r JOIN hotels_search_demo_seq t
   JOIN hotels_rates_rooms rr ON rr.id = v_rrb + (h.n - 1) * 20 + (r.n - 1) * 4 + t.n
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3 AND t.n BETWEEN 1 AND 3 + h.n % 2;
 
   -- ---------- helper: calendar days with season / weekend factors
-  DROP TABLE IF EXISTS search_demo_day;
-  CREATE TABLE search_demo_day (n INT NOT NULL PRIMARY KEY, d DATE NOT NULL, s_ua DECIMAL(4,2), s_tr DECIMAL(4,2), wk DECIMAL(4,2)) ENGINE=InnoDB;
-  INSERT INTO search_demo_day
+  DROP TABLE IF EXISTS hotels_search_demo_days;
+  CREATE TABLE hotels_search_demo_days (n INT NOT NULL PRIMARY KEY, d DATE NOT NULL, s_ua DECIMAL(4,2), s_tr DECIMAL(4,2), wk DECIMAL(4,2)) ENGINE=InnoDB;
+  INSERT INTO hotels_search_demo_days
   SELECT s.n, v_start + INTERVAL s.n DAY,
          CASE WHEN MONTH(v_start + INTERVAL s.n DAY) IN (12, 1, 2, 3) THEN 1.4 WHEN MONTH(v_start + INTERVAL s.n DAY) IN (6, 7, 8) THEN 1.2 ELSE 1.0 END,
          CASE WHEN MONTH(v_start + INTERVAL s.n DAY) IN (6, 7, 8, 9) THEN 1.5 WHEN MONTH(v_start + INTERVAL s.n DAY) IN (5, 10) THEN 1.2 ELSE 0.8 END,
          IF(DAYOFWEEK(v_start + INTERVAL s.n DAY) IN (6, 7), 1.15, 1.0)
-  FROM search_demo_seq s WHERE s.n < p_days;
+  FROM hotels_search_demo_seq s WHERE s.n < p_days;
 
   -- ---------- per-night data, in chunks of 50 hotels
   WHILE v_from <= p_hotels DO
@@ -170,14 +170,14 @@ BEGIN
     -- 8% hotel-nights with min_los 2..3, 2% CTA, 2% CTD
     INSERT INTO hotels_rates_prices (id_rate_room, id_room, id_rate, date, price, derive_type, derive_value,
                                      min_los, max_los, min_adv, max_adv, cta, ctd, active)
-    SELECT rr.id, rr.room_id, rr.rate_id, dd.d,
+    SELECT rr.id, rr.id_room, rr.id_rate, dd.d,
            ROUND(rr.pf * IF(rr.is_ua, dd.s_ua, dd.s_tr) * dd.wk, 0), 0, 0,
            IF(CRC32(CONCAT('l', rr.h, '-', dd.n)) % 100 < 8, 2 + CRC32(CONCAT('L', rr.h, '-', dd.n)) % 2, NULL),
            NULL, NULL, NULL,
            IF(CRC32(CONCAT('a', rr.id, '-', dd.n)) % 100 < 2, 1, 0),
            IF(CRC32(CONCAT('b', rr.id, '-', dd.n)) % 100 < 2, 1, 0),
            IF(CRC32(CONCAT('x', rr.id, '-', dd.n)) % 1000 < 15, 0, 1)
-    FROM search_demo_rr rr JOIN search_demo_day dd
+    FROM hotels_search_demo_rate_rooms rr JOIN hotels_search_demo_days dd
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1 AND rr.t <> 2
       AND CRC32(CONCAT('p', rr.id, '-', dd.n)) % 100 >= 2;
 
@@ -185,26 +185,26 @@ BEGIN
     --   kind 0: explicit price (overrides parent), kind 1: closed, kind 2: own derive -25%
     INSERT INTO hotels_rates_prices (id_rate_room, id_room, id_rate, date, price, derive_type, derive_value,
                                      min_los, max_los, min_adv, max_adv, cta, ctd, active)
-    SELECT rr.id, rr.room_id, rr.rate_id, dd.d,
+    SELECT rr.id, rr.id_room, rr.id_rate, dd.d,
            IF(CRC32(CONCAT('k', rr.id, '-', dd.n)) % 3 = 0, ROUND(rr.pf * IF(rr.is_ua, dd.s_ua, dd.s_tr) * dd.wk * 0.75, 0), NULL),
            IF(CRC32(CONCAT('k', rr.id, '-', dd.n)) % 3 = 2, 4, 0),
            IF(CRC32(CONCAT('k', rr.id, '-', dd.n)) % 3 = 2, -25, 0),
            NULL, NULL, NULL, NULL, 0, 0,
            IF(CRC32(CONCAT('k', rr.id, '-', dd.n)) % 3 = 1, 0, 1)
-    FROM search_demo_rr rr JOIN search_demo_day dd
+    FROM hotels_search_demo_rate_rooms rr JOIN hotels_search_demo_days dd
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1 AND rr.t = 2
       AND CRC32(CONCAT('o', rr.id, '-', dd.n)) % 100 < 3;
 
     -- daily occupancy prices (rooms with pricing_model = 2): explicit price for 1 and 3 guests on ~8% of nights,
     --   ~2% of rows with price 0 (= not set, must be ignored)
     INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price)
-    SELECT rr.id, rr.room_id, rr.rate_id, g.n, dd.d,
+    SELECT rr.id, rr.id_room, rr.id_rate, g.n, dd.d,
            IF(CRC32(CONCAT('z', rr.id, '-', g.n, '-', dd.n)) % 50 = 0, 0,
               ROUND(rr.pf * IF(rr.is_ua, dd.s_ua, dd.s_tr) * dd.wk * ELT(g.n, 0.85, 1.0, 1.25, 1.45), 0))
-    FROM search_demo_rr rr
-    JOIN hotels_rooms ro ON ro.id = rr.room_id AND ro.pricing_model = 2
-    JOIN search_demo_day dd
-    JOIN search_demo_seq g ON g.n IN (1, 3) AND g.n <= ro.max_occupancy
+    FROM hotels_search_demo_rate_rooms rr
+    JOIN hotels_rooms ro ON ro.id = rr.id_room AND ro.pricing_model = 2
+    JOIN hotels_search_demo_days dd
+    JOIN hotels_search_demo_seq g ON g.n IN (1, 3) AND g.n <= ro.max_occupancy
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1
       AND CRC32(CONCAT('od', rr.id, '-', dd.n)) % 100 < 8;
 
@@ -214,7 +214,7 @@ BEGIN
            GREATEST(1, ro.allotment + CAST(CRC32(CONCAT('v', ro.id, '-', dd.n)) % 3 AS SIGNED) - 1),
            CRC32(CONCAT('nb', ro.id, '-', dd.n)) % 4,
            IF(CRC32(CONCAT('ss', ro.id, '-', dd.n)) % 1000 < 15, 0, 1)
-    FROM hotels_rooms ro JOIN search_demo_day dd
+    FROM hotels_rooms ro JOIN hotels_search_demo_days dd
     WHERE ro.id_hotel BETWEEN v_hb + v_from AND v_hb + v_from + v_chunk - 1
       AND CRC32(CONCAT('av', ro.id, '-', dd.n)) % 100 < 80;
 
@@ -224,21 +224,21 @@ BEGIN
   -- ---------- occupancy-based pricing (rooms with pricing_model = 2): 1 guest -10%, 3 guests +15%, 4 guests +30%
   --            ~10% of rate-rooms have 3 guests switched off (active = 0 -> this guest count is not sold)
   INSERT INTO hotels_rates_occupancy (id_rate_room, id_room, id_rate, guests, amount, active)
-  SELECT rr.id, rr.room_id, rr.rate_id, g.n, ELT(g.n, -10, 0, 15, 30),
+  SELECT rr.id, rr.id_room, rr.id_rate, g.n, ELT(g.n, -10, 0, 15, 30),
          IF(g.n = 3 AND CRC32(CONCAT('g3', rr.id)) % 10 = 0, 0, 1)
-  FROM search_demo_rr rr
-  JOIN hotels_rooms ro ON ro.id = rr.room_id
-  JOIN search_demo_seq g ON g.n IN (1, 3, 4) AND g.n <= ro.max_occupancy
+  FROM hotels_search_demo_rate_rooms rr
+  JOIN hotels_rooms ro ON ro.id = rr.id_room
+  JOIN hotels_search_demo_seq g ON g.n IN (1, 3, 4) AND g.n <= ro.max_occupancy
   WHERE ro.pricing_model = 2;
 
-  DROP TABLE search_demo_rr;
-  DROP TABLE search_demo_day;
-  DROP TABLE search_demo_seq;
+  DROP TABLE hotels_search_demo_rate_rooms;
+  DROP TABLE hotels_search_demo_days;
+  DROP TABLE hotels_search_demo_seq;
 
   SELECT 'demo data generated' AS status, v_start AS start_date, p_hotels AS hotels, p_days AS days,
-         v_hb + 1 AS first_hotel_id, v_hb + p_hotels AS last_hotel_id;
+         v_hb + 1 AS id_hotel_first, v_hb + p_hotels AS id_hotel_last;
 END$$
 
 DELIMITER ;
 
-CALL search_demo_generate(2000, 365);
+CALL hotels_search_demo_generate(2000, 365);

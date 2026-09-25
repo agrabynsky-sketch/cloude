@@ -33,7 +33,7 @@ for($n = 0; $n < $cases; $n++) {
     $expected = referenceRates($mysql, $hotelId, $checkin, $nights, $guests, $today);
     $got = array();
     foreach($model->hotelRates($hotelId, array('checkin' => $checkin, 'nights' => $nights, 'guests' => $guests, 'channel' => 1)) as $row) {
-        $got[$row['rate_room_id']] = array('total' => $row['price_minor'], 'nightly' => array_map(function($v) {
+        $got[$row['id_rate_room']] = array('total' => $row['price_minor'], 'nightly' => array_map(function($v) {
             return (int)round($v * 100);
         }, $row['nightly']));
     }
@@ -60,10 +60,10 @@ for($n = 0; $n < 5; $n++) {
     $nights = mt_rand(1, 10);
     $guests = mt_rand(1, 3);
     $checkin = date('Y-m-d', strtotime("$today 12:00:00 +" . mt_rand(0, 300) . ' day'));
-    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'guests' => $guests, 'hotel_ids' => $sample, 'limit' => 1000));
+    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'guests' => $guests, 'id_hotel' => $sample, 'limit' => 1000));
     $got = array();
     foreach($res['items'] as $item) {
-        $got[$item['hotel_id']] = $item['price_minor'];
+        $got[$item['id_hotel']] = $item['price_minor'];
     }
     $expected = array();
     foreach($sample as $hotelId) {
@@ -89,10 +89,10 @@ $filterFail = 0;
 $filterChecked = 0;
 $filterSets = array(
     array('stars' => array(4, 5)),
-    array('board_ids' => array(4, 7)),
+    array('id_board_type' => array(4, 7)),
     array('refundable' => 0),
     array('stars' => array(2, 3), 'refundable' => 1, 'price_min' => 5000),
-    array('board_ids' => array(1), 'price_max' => 20000),
+    array('id_board_type' => array(1), 'price_max' => 20000),
 );
 foreach($filterSets as $filters) {
     $sample = array();
@@ -102,12 +102,12 @@ foreach($filterSets as $filters) {
     $nights = mt_rand(2, 7);
     $guests = mt_rand(1, 3);
     $checkin = date('Y-m-d', strtotime("$today 12:00:00 +" . mt_rand(0, 300) . ' day'));
-    $res = $model->search(array_merge(array('checkin' => $checkin, 'nights' => $nights, 'guests' => $guests, 'hotel_ids' => $sample,
+    $res = $model->search(array_merge(array('checkin' => $checkin, 'nights' => $nights, 'guests' => $guests, 'id_hotel' => $sample,
         'order' => '-price', 'limit' => 1000), $filters));
     $got = array();
     $prices = array();
     foreach($res['items'] as $item) {
-        $got[$item['hotel_id']] = $item['price_minor'];
+        $got[$item['id_hotel']] = $item['price_minor'];
         $prices[] = $item['price_minor'];
     }
     $sorted = $prices;
@@ -120,7 +120,7 @@ foreach($filterSets as $filters) {
         }
         foreach(referenceRates($mysql, $hotelId, $checkin, $nights, $guests, $today) as $rrId => $v) {
             $rate = $mysql->fetchRow('SELECT t.id_board_type, t.id_cancel_policy FROM hotels_rates_rooms rr JOIN hotels_rates t ON t.id = rr.id_rate WHERE rr.id = ?', array($rrId));
-            if((!empty($filters['board_ids']) && !in_array((int)$rate['id_board_type'], $filters['board_ids']))
+            if((!empty($filters['id_board_type']) && !in_array((int)$rate['id_board_type'], $filters['id_board_type']))
                 || (isset($filters['refundable']) && (int)!empty($rate['id_cancel_policy']) != $filters['refundable'])
                 || (isset($filters['price_min']) && $v['total'] < $filters['price_min'] * 100)
                 || (isset($filters['price_max']) && $v['total'] > $filters['price_max'] * 100)) {

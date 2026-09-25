@@ -1,7 +1,7 @@
 <?php
 
 /**
- * Очередь отелей на пересборку поискового кэша (MySQL-таблица search_sync_queue).
+ * Очередь отелей на пересборку поискового кэша (MySQL-таблица hotels_search_sync_queue).
  *
  * Постановка в очередь (из любого места, где меняются данные отеля):
  *   Search_Sync_Queue::getInstance()->push($hotelId, 'bulkedit');
@@ -10,7 +10,7 @@
  * Работает через Zend_Db-адаптер MySQL (по умолчанию Zend_Db_Table_Abstract::getDefaultAdapter()).
  */
 class Search_Sync_Queue {
-    const TABLE = 'search_sync_queue';
+    const TABLE = 'hotels_search_sync_queue';
     const STALE_CLAIM_MINUTES = 10;   // забранные, но не завершённые отели (упавший воркер) вернутся в работу
 
     protected static $_instance;
@@ -52,14 +52,14 @@ class Search_Sync_Queue {
             foreach($chunk as $id) {
                 $values[] = '(' . $id . ', 1, ' . $reason . ', NOW())';
             }
-            $this->_db->query('INSERT INTO ' . self::TABLE . ' (hotel_id, version, reason, queued_at) VALUES ' . implode(',', $values) .
+            $this->_db->query('INSERT INTO ' . self::TABLE . ' (id_hotel, version, reason, queued_at) VALUES ' . implode(',', $values) .
                 ' ON DUPLICATE KEY UPDATE version = version + 1, reason = VALUES(reason), queued_at = VALUES(queued_at)');
         }
         return count($hotelIds);
     }
 
     /**
-     * Атомарно забрать до $limit отелей. Возвращает array(hotel_id => version).
+     * Атомарно забрать до $limit отелей. Возвращает array(id_hotel => version).
      * @param string $token уникальный идентификатор воркера
      * @param int $limit
      * @return array
@@ -68,13 +68,13 @@ class Search_Sync_Queue {
         $this->_db->query('UPDATE ' . self::TABLE . ' SET claimed_by = ?, claimed_at = NOW(), attempts = attempts + 1
             WHERE claimed_by IS NULL OR claimed_at < NOW() - INTERVAL ' . (int)self::STALE_CLAIM_MINUTES . ' MINUTE
             ORDER BY queued_at LIMIT ' . (int)$limit, array($token));
-        return $this->_db->fetchPairs('SELECT hotel_id, version FROM ' . self::TABLE . ' WHERE claimed_by = ?', array($token));
+        return $this->_db->fetchPairs('SELECT id_hotel, version FROM ' . self::TABLE . ' WHERE claimed_by = ?', array($token));
     }
 
     /**
      * Удалить обработанные отели. Отель, изменённый во время сборки (version выросла), остаётся в очереди.
      * @param string $token
-     * @param array $claimed array(hotel_id => version) из claim()
+     * @param array $claimed array(id_hotel => version) из claim()
      */
     public function done($token, array $claimed) {
         foreach(array_chunk($claimed, 500, true) as $chunk) {
@@ -82,7 +82,7 @@ class Search_Sync_Queue {
             foreach($chunk as $hotelId => $version) {
                 $pairs[] = '(' . (int)$hotelId . ',' . (int)$version . ')';
             }
-            $this->_db->query('DELETE FROM ' . self::TABLE . ' WHERE claimed_by = ? AND (hotel_id, version) IN (' . implode(',', $pairs) . ')', array($token));
+            $this->_db->query('DELETE FROM ' . self::TABLE . ' WHERE claimed_by = ? AND (id_hotel, version) IN (' . implode(',', $pairs) . ')', array($token));
         }
         $this->release($token);
     }
@@ -94,7 +94,7 @@ class Search_Sync_Queue {
         $hotelIds = array_map('intval', $hotelIds);
         if(!empty($hotelIds)) {
             $this->_db->query('UPDATE ' . self::TABLE . ' SET claimed_by = NULL, claimed_at = NULL, last_error = ?
-                WHERE claimed_by = ? AND hotel_id IN (' . implode(',', $hotelIds) . ')', array(substr((string)$error, 0, 255), $token));
+                WHERE claimed_by = ? AND id_hotel IN (' . implode(',', $hotelIds) . ')', array(substr((string)$error, 0, 255), $token));
         }
     }
 

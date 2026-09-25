@@ -13,7 +13,7 @@
  * с разных машин могут прийти не по порядку.
  */
 class Search_Sync_Worker {
-    const TABLE = 'search_stay';
+    const TABLE = 'hotels_search_stay';
 
     /** @var Search_ClickHouse_Client */
     protected $_client;
@@ -135,7 +135,7 @@ class Search_Sync_Worker {
     public function enqueueAll($reason = 'full', $db = null) {
         $db = $db ? $db : Zend_Db_Table_Abstract::getDefaultAdapter();
         $ids = $db->fetchCol('SELECT id FROM hotels');
-        $ids = array_merge($ids, $this->_client->fetchCol('SELECT DISTINCT hotel_id FROM ' . self::TABLE . ' FINAL WHERE d = '
+        $ids = array_merge($ids, $this->_client->fetchCol('SELECT DISTINCT id_hotel FROM ' . self::TABLE . ' FINAL WHERE d = '
             . $this->_client->quote($this->_builder->getStartDate())));
         return $this->_queue->push(array_unique($ids), $reason);
     }
@@ -172,15 +172,15 @@ class Search_Sync_Worker {
 
     /**
      * Какие рум-рейты отелей сейчас лежат в ClickHouse (по первой дате горизонта).
-     * @return array hotel_id => array(rate_room_id, ...)
+     * @return array id_hotel => array(id_rate_room, ...)
      */
     protected function _existingRateRooms(array $hotelIds) {
         $result = array();
         foreach(array_chunk($hotelIds, 1000) as $chunk) {
-            $rows = $this->_client->fetchAll('SELECT hotel_id, rate_room_id FROM ' . self::TABLE . ' FINAL
-                WHERE d = ' . $this->_client->quote($this->_builder->getStartDate()) . ' AND hotel_id IN (' . implode(',', $chunk) . ')');
+            $rows = $this->_client->fetchAll('SELECT id_hotel, id_rate_room FROM ' . self::TABLE . ' FINAL
+                WHERE d = ' . $this->_client->quote($this->_builder->getStartDate()) . ' AND id_hotel IN (' . implode(',', $chunk) . ')');
             foreach($rows as $row) {
-                $result[$row['hotel_id']][] = (int)$row['rate_room_id'];
+                $result[$row['id_hotel']][] = (int)$row['id_rate_room'];
             }
         }
         return $result;
