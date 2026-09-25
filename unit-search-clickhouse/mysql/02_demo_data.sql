@@ -13,6 +13,8 @@
 --                               (+ ~3% собственных строк у производного тарифа: своя цена / закрытие / свой %)
 --   hotels_rooms_availability   наличие на ~80% ночей (остальные ночи = allotment номера)
 --   hotels_rates_occupancy      надбавки за 1/3/4 гостей для номеров с pricing_model = 2
+--   hotels_rates_occupancy_daily цены за 1 и 3 гостей на ~8% ночей для номеров с pricing_model = 2
+--                               (~2% строк с price = 0 — "не задано", и строки для выключенного числа гостей)
 --
 -- Безопасность для рабочей базы:
 --   * id берутся от MAX(id) + 1000 каждой таблицы (без больших скачков AUTO_INCREMENT);
@@ -192,6 +194,19 @@ BEGIN
     FROM search_demo_rr rr JOIN search_demo_day dd
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1 AND rr.t = 2
       AND CRC32(CONCAT('o', rr.id, '-', dd.n)) % 100 < 3;
+
+    -- daily occupancy prices (rooms with pricing_model = 2): explicit price for 1 and 3 guests on ~8% of nights,
+    --   ~2% of rows with price 0 (= not set, must be ignored)
+    INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price)
+    SELECT rr.id, rr.room_id, rr.rate_id, g.n, dd.d,
+           IF(CRC32(CONCAT('z', rr.id, '-', g.n, '-', dd.n)) % 50 = 0, 0,
+              ROUND(rr.pf * IF(rr.is_ua, dd.s_ua, dd.s_tr) * dd.wk * ELT(g.n, 0.85, 1.0, 1.25, 1.45), 0))
+    FROM search_demo_rr rr
+    JOIN hotels_rooms ro ON ro.id = rr.room_id AND ro.pricing_model = 2
+    JOIN search_demo_day dd
+    JOIN search_demo_seq g ON g.n IN (1, 3) AND g.n <= ro.max_occupancy
+    WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1
+      AND CRC32(CONCAT('od', rr.id, '-', dd.n)) % 100 < 8;
 
     -- availability: rows on ~80% of room-nights, 0..3 booked, ~1.5% stop-sale
     INSERT INTO hotels_rooms_availability (id_room, date, allotment, net_booked, active)

@@ -14,6 +14,7 @@ SELECT id_rate_room, date, COUNT(*) FROM hotels_rates_prices GROUP BY id_rate_ro
 SELECT id_room, date, COUNT(*) FROM hotels_rooms_availability GROUP BY id_room, date HAVING COUNT(*) > 1 LIMIT 10;
 SELECT id_rate, id_room, COUNT(*) FROM hotels_rates_rooms GROUP BY id_rate, id_room HAVING COUNT(*) > 1 LIMIT 10;
 SELECT id_rate_room, guests, COUNT(*) FROM hotels_rates_occupancy GROUP BY id_rate_room, guests HAVING COUNT(*) > 1 LIMIT 10;
+SELECT id_rate_room, guests, date, COUNT(*) FROM hotels_rates_occupancy_daily GROUP BY id_rate_room, guests, date HAVING COUNT(*) > 1 LIMIT 10;
 
 ALTER TABLE hotels_rates_prices MODIFY `date` DATE NOT NULL,
   ADD UNIQUE KEY uq_rr_date (id_rate_room, `date`), DROP KEY id_rate_room;
@@ -21,3 +22,5 @@ ALTER TABLE hotels_rooms_availability MODIFY `date` DATE NOT NULL,
   ADD UNIQUE KEY uq_room_date (id_room, `date`), DROP KEY id_room;
 ALTER TABLE hotels_rates_rooms ADD UNIQUE KEY uq_rate_room (id_rate, id_room);
 ALTER TABLE hotels_rates_occupancy ADD UNIQUE KEY uq_rr_guests (id_rate_room, guests);
+ALTER TABLE hotels_rates_occupancy_daily MODIFY `date` DATE NOT NULL,
+  ADD UNIQUE KEY uq_rr_date_guests (id_rate_room, `date`, guests), DROP KEY id_rate_room;

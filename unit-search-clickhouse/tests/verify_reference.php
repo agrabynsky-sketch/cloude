@@ -1,7 +1,7 @@
 <?php
 /**
  * Сверка поискового кэша с эталоном, посчитанным "в лоб" по ночам прямо из MySQL (без кода Search_Sync_Builder).
- *   php tests/verify_reference.php [cases=200] [seed=1]
+ *   php tests/verify_reference.php [cases=200] [seed=1] [hotel_from-hotel_to]
  *
  * Для случайных (отель, дата заезда, ночей, гостей):
  *   - hotelRates()   == эталонный список доступных рум-рейтов (id, итоговая цена, цены по ночам);
@@ -15,6 +15,12 @@ mt_srand(isset($argv[2]) ? (int)$argv[2] : 1);
 $model = new Search_Model_Stay($chHttp);
 $today = date('Y-m-d');
 $hotelIds = $mysql->fetchCol('SELECT id FROM hotels WHERE active = 1');
+// необязательный диапазон отелей, напр. 1005-1104 (проверка дублей из tests/inject_duplicates.sql)
+if(isset($argv[3]) && preg_match('/^(\d+)-(\d+)$/', $argv[3], $m)) {
+    $hotelIds = array_values(array_filter($hotelIds, function($id) use ($m) {
+        return $id >= $m[1] && $id <= $m[2];
+    }));
+}
 
 $fail = 0;
 $checkedRates = 0;
@@ -41,6 +47,7 @@ for($n = 0; $n < $cases; $n++) {
     }
 }
 printf("hotelRates: %d cases, %d room-rate prices compared, %d cases with nothing available, mismatches: %d\n", $cases, $checkedRates, $emptyCases, $fail);
+printf("            nights priced from hotels_rates_occupancy_daily in the reference: %d\n", isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0);
 
 // search(): минимум по отелю для случайных наборов из 50 отелей
 $searchFail = 0;

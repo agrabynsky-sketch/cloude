@@ -17,7 +17,7 @@ MySQL остаётся источником истины; в ClickHouse лежа
 ```mermaid
 flowchart LR
     subgraph MySQL["MySQL 5.7 (source of truth)"]
-        T[hotels, hotels_rooms, hotels_rates,<br/>hotels_rates_rooms, hotels_rates_prices,<br/>hotels_rooms_availability, hotels_rates_occupancy]
+        T[hotels, hotels_rooms, hotels_rates,<br/>hotels_rates_rooms, hotels_rates_prices,<br/>hotels_rooms_availability, hotels_rates_occupancy,<br/>hotels_rates_occupancy_daily]
         Q[(search_sync_queue)]
     end
     A[Экстранет / bulk edit /<br/>бронирования] -- "изменение + push(hotel_id)<br/>в одной транзакции" --> T
@@ -43,18 +43,18 @@ flowchart LR
 |---|---|
 | `mysql/00_recommended_indexes.sql` | Составные UNIQUE-индексы из анализа (ускоряют сборщик, защищают от дублей). Не обязательно, но рекомендуется |
 | `mysql/01_search_sync_queue.sql` | Таблица очереди `search_sync_queue` |
-| `mysql/02_demo_data.sql` | Генератор демо-данных: 2000 отелей × 3–5 номеров × 3–4 тарифа × 365 дней |
+| `mysql/02_demo_data.sql` | Генератор демо-данных: 2000 отелей × 3–5 номеров × 3–4 тарифа × 365 дней (цены, наличие, надбавки, дневные цены на гостей) |
 | `mysql/03_demo_cleanup.sql` | Удаление демо-данных (строго по сохранённым диапазонам id) |
 | `clickhouse/01_schema.sql` | База `unit_search`, таблица `search_stay` |
 | `clickhouse/02_users.sql` | Пользователи `search_writer` (синхронизация) и `search_reader` (сайт) |
 | `clickhouse/config.d/unit_mysql.xml` | Подключение ClickHouse → MySQL для полной загрузки без PHP |
-| `clickhouse/03_full_load_from_mysql.sql`, `03b_build_chunk.sql`, `04_full_load_swap.sql`, `full_load.sh` | Полная пересборка силами ClickHouse (35 с на 2000 отелей) |
+| `clickhouse/03_full_load_from_mysql.sql`, `03b_build_chunk.sql`, `04_full_load_swap.sql`, `full_load.sh` | Полная пересборка силами ClickHouse (~50 с на 2000 отелей) |
 | `library/Search/ClickHouse/*` | Клиент ClickHouse: `Client` + транспорты `Transport_Http` (curl) и `Transport_Mysql` (Zend_Db, порт 9004) |
 | `library/Search/Model/Stay.php` | Модель поиска: `search()` и `hotelRates()` |
 | `library/Search/Sync/*` | Синхронизация: `Queue` (очередь в MySQL), `Builder` (MySQL → строки кэша), `Worker` |
 | `scripts/search-sync.php` (+ `.config.php.dist`) | CLI синхронизации |
 | `application/controllers/SearchController.php` | Пример ZF1-контроллера (JSON API) |
-| `tests/*` | Проверки: эталон «в лоб», сквозной тест очереди, сравнение транспортов, бенчмарк, smoke-тест контроллера |
+| `tests/*` | Проверки: эталон «в лоб», сквозной тест очереди, сравнение транспортов, бенчмарк, smoke-тест контроллера; `inject_duplicates.sql` — дубли строк для проверки на стенде |
 
 Код совместим с PHP 5.4+ (только `array()`, без `??`, скалярных тайпхинтов и т.п.), классы названы по соглашению ZF1 (`Search_Model_Stay` → `library/Search/Model/Stay.php`) и подключаются автозагрузчиком `Zend_Loader_Autoloader::getInstance()->registerNamespace('Search_')`.
 
@@ -72,7 +72,7 @@ clickhouse-client --multiquery < clickhouse/01_schema.sql
 clickhouse-client --multiquery < clickhouse/02_users.sql                  # после config.d: там GRANT на named collection
 
 # --- первичная загрузка кэша (любой из двух способов)
-CH="clickhouse-client --user search_writer --password ..." clickhouse/full_load.sh   # силами ClickHouse, ~35 с
+CH="clickhouse-client --user search_writer --password ..." clickhouse/full_load.sh   # силами ClickHouse, ~50 с
 php scripts/search-sync.php full                                                     # силами PHP-воркера, ~3 мин
 
 # --- PHP
@@ -88,7 +88,7 @@ Cron (на одной машине — CLI держит `flock`, два ворк
 0 */2 * * * php /var/www/unit/scripts/search-sync.php optimize           # склеить версии строк (см. «Эксплуатация»)
 ```
 
-Удалить демо: `mysql ... < mysql/03_demo_cleanup.sql`, затем `php scripts/search-sync.php hotels <first_id>-<last_id>` (id печатает генератор) — удалённые отели получат tombstone-строки и пропадут из поиска.
+Удалить демо: `mysql ... < mysql/03_demo_cleanup.sql` (3–8 мин, удаляет пачками), затем `php scripts/search-sync.php hotels <first_id>-<last_id>` (id печатает генератор) — удалённые отели получат tombstone-строки и пропадут из поиска.
 
 ## 4. Правила расчёта (что считается «доступно» и «сколько стоит»)
 
@@ -101,6 +101,8 @@ Cron (на одной машине — CLI держит `flock`, два ворк
     иначе цена родителя на том же номере × `(100 + dv) / 100`, где `dv` = своя `derive_value` при `derive_type = 4`, иначе `−hotels_rates.derive_value`.
 * **Наличие:** строка `hotels_rooms_availability`, иначе `allotment` номера, `net_booked = 0`, `active = 1`; продаётся, если `active = 1` и `allotment − net_booked > 0`.
 * **Цена на g гостей** (g = 1..min(8, max(max_occupancy, base_occupancy))): при `pricing_model = 2` и наличии строки `hotels_rates_occupancy(rate_room, g)` — `active = 1` → база × (1 + amount/100), `active = 0` → на g гостей не продаётся; иначе базовая цена.
+* **Дневная цена на g гостей** — `hotels_rates_occupancy_daily(rate_room, g, дата)` с `price > 0` при `pricing_model = 2`: цена этой ночи на g гостей = `price` (приоритет над процентом из `hotels_rates_occupancy`). Действует, только если ночь вообще продаётся (есть базовая цена, номер свободен) и g гостей не выключено; `price = 0` — «не задано».
+* **Дубли строк** (в MySQL нет UNIQUE-ключей, дубли создаёт, например, ошибка пагинации bulk edit): для цены, наличия, надбавки и дневной цены берётся строка с **максимальным id**, целиком. Лучше закрыть дубли ключами из `mysql/00_recommended_indexes.sql`.
 * **Ограничения** даты берутся из своей строки цены рум-рейта, иначе из тарифа: `min_los`/`min_adv` (NULL → значение тарифа), `max_los`/`max_adv` (0 или NULL → без ограничения), `cta`/`ctd`. Проверяются по дате заезда (CTA, LOS, ADV) и дате выезда (CTD).
 * **Округление** целочисленное half up в копейках — PHP и ClickHouse дают одинаковые суммы до копейки.
 * Все цены — в валюте отеля (`currency_id`); поиск сортирует по цене внутри одной валюты.
@@ -111,6 +113,7 @@ Cron (на одной машине — CLI держит `flock`, два ворк
 3. Нет строки надбавки на g гостей → базовая цена; строка с `active = 0` → на g гостей не продаётся.
 4. Дети/возраст не учитываются — пока только общее число гостей.
 5. Разные валюты: для сортировки выдачи по цене между странами нужен курс (удобно словарём ClickHouse `dictGet`).
+6. `hotels_rates_occupancy_daily`: дневная цена — абсолютная цена ночи на g гостей и заменяет процент; работает только для `pricing_model = 2`; производный тариф её у родителя **не** наследует (только свои строки, как и проценты); ночь, закрытая по базовой цене, дневной ценой не открывается. Если таблица на самом деле хранит что-то другое (например, заранее посчитанные цены по всем датам или процент, как было в старой колонке `amount`), правило меняется в `Search_Sync_Builder`, `03b_build_chunk.sql` и `tests/reference.php`.
 
 ## 5. Синхронизация MySQL → ClickHouse через HTTP (текущий этап)
 
@@ -134,6 +137,7 @@ Cron (на одной машине — CLI держит `flock`, два ворк
 | `Hotels_Rates_Grid::doSaveRate()`, удаление тарифа в `HotelsController::editrateAction()` | тариф: цена-родитель, скидка, каналы, видимость, привязка к номерам, min_los/min_adv |
 | `Hotels_Rooms_Grid::save()`, удаление номера в `HotelsController::editroomAction()` | номер: allotment, вместимость, pricing_model, активность |
 | `Hotels_Rates_Occupancy::doUpdate()` | надбавки за число гостей, base_occupancy |
+| Всё, что пишет `hotels_rates_occupancy_daily` | дневные цены на число гостей (окно occupancy в календаре, bulk edit, API/channel manager) |
 | `Hotels_Grid::save()` | отель: звёзды, регион, валюта, активность |
 | Создание/отмена бронирования | изменение `net_booked` в `hotels_rooms_availability` |
 | cron `enqueue-all` раз в сутки | сдвиг горизонта на новый день, сверка |
@@ -145,7 +149,7 @@ Cron (на одной машине — CLI держит `flock`, два ворк
 | 1 отель (≈4 400 строк) | 67 мс |
 | 50 отелей (≈256 тыс. строк) | 2,9–3,2 с |
 | Все 2002 отеля (10,25 млн строк), PHP-воркер | 3 мин 15 с |
-| Все 2002 отеля, силами ClickHouse (`full_load.sh`) | 35 с |
+| Все 2002 отеля, силами ClickHouse (`full_load.sh`, с дедупликацией дублей) | 48 с |
 
 ## 6. Прямая связь MySQL ↔ ClickHouse без HTTP
 
@@ -243,9 +247,9 @@ class Search_Model_HotelAvailability extends Search_Model_Abstract {
 
 | Проверка | Результат |
 |---|---|
-| `tests/verify_reference.php` — эталон «в лоб» по ночам из MySQL против `hotelRates()`/`search()` | 870 случаев, 4 378 цен рум-рейтов с разбивкой по ночам, 30 наборов × 50 отелей, 20 наборов фильтров с проверкой сортировки — **0 расхождений** |
-| `tests/compare_php_vs_sql_build.sql` — PHP-сборщик против SQL-сборки ClickHouse | 10 252 392 строки, все колонки — **идентичны** (EXCEPT DISTINCT в обе стороны + хеш всех строк) |
-| `tests/queue_flow.php` — изменение в MySQL → очередь → воркер → кэш | цена BAR (+производный), выключение тарифа (tombstone), private-тариф, стоп-продажа, выключение отеля, изменение во время сборки, откат — **всё OK** |
+| `tests/verify_reference.php` — эталон «в лоб» по ночам из MySQL против `hotelRates()`/`search()` | текущая версия: 800 случаев, 3 910 цен рум-рейтов с разбивкой по ночам (из них 416 ночей по дневной цене на гостей), 15 наборов × 50 отелей, 15 наборов фильтров с проверкой сортировки, в т.ч. 300 случаев на 100 отелях с дублями строк — **0 расхождений** |
+| `tests/compare_php_vs_sql_build.sql` — PHP-сборщик против SQL-сборки ClickHouse | 10 252 392 строки, все колонки — **идентичны** (EXCEPT DISTINCT в обе стороны + хеш всех строк), в т.ч. с 350 912 дневными ценами и ~20 тыс. дублей строк (`tests/inject_duplicates.sql`) |
+| `tests/queue_flow.php` — изменение в MySQL → очередь → воркер → кэш | цена BAR (+производный), выключение тарифа (tombstone), private-тариф, стоп-продажа, выключение отеля, изменение во время сборки, дневная цена на 3 гостей и `price = 0`, дубль строки цены, полный откат — **всё OK** |
 | `tests/compare_transports.php` — HTTP 8123 против MySQL-протокола 9004 | ответы совпадают полностью |
 | `tests/controller_smoke.php` — `SearchController` через `Zend_Controller_Front` | 200 / 400 / 503 — OK |
 | `mysql/03_demo_cleanup.sql` | база вернулась ровно к исходному дампу |
@@ -279,7 +283,7 @@ class Search_Model_HotelAvailability extends Search_Model_Abstract {
 3. Подключить `library/Search` в проект (автозагрузка `Search_`), клиент ClickHouse в Bootstrap, конфиг в `application.ini`.
 4. Расставить `Search_Sync_Queue::push()` по местам из таблицы в разделе 5 (включая бронирования).
 5. Настроить cron: `worker` раз в минуту, `enqueue-all` ночью, `optimize` раз в 1–3 часа; первичная загрузка — `full_load.sh`.
-6. Подтвердить с бизнесом правила из раздела 4 (пункты 1–5) и при необходимости поправить сборщик и SQL-сборку **одновременно** (тесты `verify_reference.php` и `compare_php_vs_sql_build.sql` поймают расхождение).
+6. Подтвердить с бизнесом правила из раздела 4 (пункты 1–6) и при необходимости поправить сборщик и SQL-сборку **одновременно** (тесты `verify_reference.php` и `compare_php_vs_sql_build.sql` поймают расхождение).
 7. Сделать выдачу и карточку отеля на `Search_Model_Stay` (пример — `SearchController`), контент отелей брать из своего кэша по id.
 8. Перед бронированием — перепроверка цены и наличия в MySQL.
 9. Прогнать `tests/*` на стейдже с демо-данными, затем удалить демо (`03_demo_cleanup.sql` + `search-sync.php hotels <ids>`).

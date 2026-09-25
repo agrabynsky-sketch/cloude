@@ -46,9 +46,12 @@ FROM
             NULL) AS base,
         toInt64(ifNull(a.allotment, g.room_allotment)) - toInt64(ifNull(a.net_booked, 0)) AS free,
         toUInt8(ifNull(ifNull(a.active, 1) = 1 AND free > 0 AND base IS NOT NULL AND base > 0, 0)) AS sell,
-        -- цены на 1..8 гостей (gp[g])
-        arrayMap(m -> if(m = 0 OR base IS NULL, toInt64(0), if(m = 10000, assumeNotNull(base),
-            greatest(toInt64(0), intDiv(assumeNotNull(base) * m + 5000, 10000)))), g.mult) AS gp,
+        -- цены на 1..8 гостей (gp[g]): дневная цена hotels_rates_occupancy_daily (pricing_model = 2, price > 0),
+        -- иначе база × множитель надбавки
+        arrayMap((m, gg) -> if(m = 0 OR base IS NULL, toInt64(0),
+            if(g.occ_based = 1 AND has(od.dg, gg) AND od.dp[indexOf(od.dg, gg)] > 0, od.dp[indexOf(od.dg, gg)],
+                if(m = 10000, assumeNotNull(base), greatest(toInt64(0), intDiv(assumeNotNull(base) * m + 5000, 10000))))),
+            g.mult, arrayMap(x -> toUInt8(x), range(1, 9))) AS gp,
         -- ограничения даты: своя строка цены, иначе значения тарифа
         toUInt8(ifNull(p.cta, 0) > 0) AS cta,
         toUInt8(ifNull(p.ctd, 0) > 0) AS ctd,
@@ -79,5 +82,10 @@ FROM
         SELECT * FROM unit_search.stg_avail WHERE id_room IN
             (SELECT room_id FROM unit_search.stg_rr_ext WHERE hotel_id % {chunks:UInt32} = {chunk:UInt32})
     ) AS a ON a.id_room = g.room_id AND a.date = g.d
+    LEFT JOIN
+    (
+        SELECT * FROM unit_search.stg_occ_daily WHERE id_rate_room IN
+            (SELECT rate_room_id FROM unit_search.stg_rr_ext WHERE hotel_id % {chunks:UInt32} = {chunk:UInt32} AND occ_based = 1)
+    ) AS od ON od.id_rate_room = g.rate_room_id AND od.date = g.d
 )
 WINDOW w AS (PARTITION BY rate_room_id ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING);

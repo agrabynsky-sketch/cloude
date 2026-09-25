@@ -37,6 +37,12 @@ BEGIN
     SET v_rows = ROW_COUNT();
   END WHILE;
 
+  SET v_rows = 1;
+  WHILE v_rows > 0 DO
+    DELETE FROM hotels_rates_occupancy_daily WHERE id_rate_room BETWEEN v_rr1 AND v_rr2 LIMIT 10000;
+    SET v_rows = ROW_COUNT();
+  END WHILE;
+
   DELETE FROM hotels_rates_occupancy WHERE id_rate_room BETWEEN v_rr1 AND v_rr2;
   DELETE FROM hotels_rates_rooms     WHERE id BETWEEN v_rr1 AND v_rr2;
   DELETE FROM hotels_rates           WHERE id BETWEEN v_t1 AND v_t2;

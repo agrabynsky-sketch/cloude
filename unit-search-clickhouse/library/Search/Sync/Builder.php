@@ -20,11 +20,16 @@
  *  Цена на g гостей (g = 1..min(8, max(max_occupancy, base_occupancy))):
  *   pricing_model = 2 и есть строка hotels_rates_occupancy(rate_room, g): active = 1 -> база × (10000 + amount×100) / 10000,
  *   active = 0 -> на g гостей не продаётся; иначе (нет строки или pricing_model = 1) -> базовая цена.
+ *   pricing_model = 2 и есть строка hotels_rates_occupancy_daily(rate_room, g, дата) с price > 0 -> цена ночи на g гостей
+ *   = эта price (приоритет над процентом). Строка действует, только если ночь продаётся (есть базовая цена, номер свободен)
+ *   и g гостей не выключено; при дублях берётся строка с максимальным id; price = 0 — "не задано".
  *  Ограничения даты (из своей строки цены рум-рейта, иначе из тарифа):
  *   min_los = своя min_los, если не NULL, иначе hotels_rates.min_los; < 1 -> 1;  max_los: >0 или 999;
  *   min_adv = своя min_adv, если не NULL, иначе hotels_rates.min_adv;          max_adv: >0 или 9999;
  *   cta / ctd — из своей строки (иначе 0).
  *  Округление — целочисленное (half up), чтобы PHP и ClickHouse давали одинаковые копейки.
+ *  Дубли (одна и та же ночь/номер/гости несколько раз — в MySQL нет UNIQUE): побеждает строка с максимальным id
+ *  (запросы идут с ORDER BY id, последняя строка перезаписывает предыдущие).
  *
  * Память: строки не копятся — каждая отдаётся в callback готовой TSV-строкой ("...\n") в порядке self::$columns
  * и сразу пишется в буфер воркера.
@@ -122,7 +127,7 @@ class Search_Sync_Builder {
         // per-night rows, stored compactly: [rate_room][day] = array(price, derive_type, derive_value, min_los, max_los, min_adv, max_adv, cta, ctd, active)
         $prices = array();
         $stmt = $db->query('SELECT id_rate_room, date, price, derive_type, derive_value, min_los, max_los, min_adv, max_adv, cta, ctd, active
-            FROM hotels_rates_prices WHERE id_rate_room IN (' . $rrIds . ') AND date' . $between);
+            FROM hotels_rates_prices WHERE id_rate_room IN (' . $rrIds . ') AND date' . $between . ' ORDER BY id');
         while($r = $stmt->fetch(Zend_Db::FETCH_NUM)) {
             if(!isset($this->_days[$r[1]])) {
                 continue;
@@ -132,15 +137,24 @@ class Search_Sync_Builder {
         }
         $avail = array();
         $stmt = $db->query('SELECT id_room, date, allotment, net_booked, active FROM hotels_rooms_availability
-            WHERE id_room IN (' . implode(',', array_keys($rooms)) . ') AND date' . $between);
+            WHERE id_room IN (' . implode(',', array_keys($rooms)) . ') AND date' . $between . ' ORDER BY id');
         while($r = $stmt->fetch(Zend_Db::FETCH_NUM)) {
             if(isset($this->_days[$r[1]])) {
                 $avail[$r[0]][$this->_days[$r[1]]] = array(is_null($r[2]) ? null : (int)$r[2], (int)$r[3], (int)$r[4]);
             }
         }
         $occupancy = array();
-        foreach($db->fetchAll('SELECT id_rate_room, guests, amount, active FROM hotels_rates_occupancy WHERE id_rate_room IN (' . $rrIds . ')') as $r) {
+        foreach($db->fetchAll('SELECT id_rate_room, guests, amount, active FROM hotels_rates_occupancy WHERE id_rate_room IN (' . $rrIds . ') ORDER BY id') as $r) {
             $occupancy[$r['id_rate_room']][(int)$r['guests']] = array(self::toMinor($r['amount']), (int)$r['active']);
+        }
+        // дневные цены на число гостей: [rate_room][day][guests] = копейки; ORDER BY id — при дублях побеждает последняя строка
+        $occupancyDaily = array();
+        $stmt = $db->query('SELECT id_rate_room, date, guests, price FROM hotels_rates_occupancy_daily
+            WHERE id_rate_room IN (' . $rrIds . ') AND date' . $between . ' ORDER BY id');
+        while($r = $stmt->fetch(Zend_Db::FETCH_NUM)) {
+            if(isset($this->_days[$r[1]])) {
+                $occupancyDaily[$r[0]][$this->_days[$r[1]]][(int)$r[2]] = self::toMinor($r[3]);
+            }
         }
 
         $dates = array_keys($this->_days);
@@ -154,6 +168,8 @@ class Search_Sync_Builder {
             $own = isset($prices[$rrId]) ? $prices[$rrId] : array();
             $par = ($parentRr && isset($prices[$parentRr])) ? $prices[$parentRr] : array();
             $av = isset($avail[$rr['id_room']]) ? $avail[$rr['id_room']] : array();
+            $occBased = 2 == $room['pricing_model'];
+            $daily = ($occBased && isset($occupancyDaily[$rrId])) ? $occupancyDaily[$rrId] : array();
 
             // guests allowed and occupancy multipliers (static per rate-room)
             $maxGuests = min(self::MAX_GUESTS, max((int)$room['max_occupancy'], (int)$room['base_occupancy'], 1));
@@ -223,8 +239,13 @@ class Search_Sync_Builder {
 
                 if($sell) {
                     $k++;
+                    $dayPrices = isset($daily[$i]) ? $daily[$i] : null;
                     foreach($mult as $g => $m) {
-                        $sum[$g] += max(0, 10000 == $m ? $base : self::roundDiv($base * $m, 10000));
+                        if($dayPrices && isset($dayPrices[$g]) && $dayPrices[$g] > 0) {
+                            $sum[$g] += $dayPrices[$g];
+                        } else {
+                            $sum[$g] += max(0, 10000 == $m ? $base : self::roundDiv($base * $m, 10000));
+                        }
                     }
                 }
             }

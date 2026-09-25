@@ -1,7 +1,7 @@
 <?php
 /**
  * Эталонный расчёт "в лоб" по ночам прямо из MySQL — независимая от Search_Sync_Builder реализация тех же правил.
- * Используется в verify_reference.php и queue_flow.php.
+ * Используется в verify_reference.php и queue_flow.php. При дублях строк берётся строка с максимальным id.
  */
 
 /**
@@ -25,7 +25,7 @@ function referenceRates($db, $hotelId, $checkin, $nights, $guests, $today, $chan
     $rrs = $db->fetchAssoc('SELECT * FROM hotels_rates_rooms WHERE id_room IN (' . implode(',', array_keys($rooms)) . ')
         AND id_rate IN (' . implode(',', array_keys($rates)) . ')');
     $price = function($rrId, $date) use ($db) {
-        return $db->fetchRow('SELECT * FROM hotels_rates_prices WHERE id_rate_room = ? AND date = ?', array($rrId, $date));
+        return $db->fetchRow('SELECT * FROM hotels_rates_prices WHERE id_rate_room = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rrId, $date));
     };
     $result = array();
     foreach($rrs as $rrId => $rr) {
@@ -41,7 +41,7 @@ function referenceRates($db, $hotelId, $checkin, $nights, $guests, $today, $chan
         }
         $mult = 10000;
         if(2 == $room['pricing_model']) {
-            $occ = $db->fetchRow('SELECT * FROM hotels_rates_occupancy WHERE id_rate_room = ? AND guests = ?', array($rrId, $guests));
+            $occ = $db->fetchRow('SELECT * FROM hotels_rates_occupancy WHERE id_rate_room = ? AND guests = ? ORDER BY id DESC LIMIT 1', array($rrId, $guests));
             if($occ) {
                 if(!$occ['active']) {
                     continue;
@@ -71,14 +71,22 @@ function referenceRates($db, $hotelId, $checkin, $nights, $guests, $today, $chan
                 $x = (int)round($par['price'] * 100) * (100 + $dv);
                 $base = (int)floor((2 * $x + 100) / 200);            // half up
             }
-            $av = $db->fetchRow('SELECT * FROM hotels_rooms_availability WHERE id_room = ? AND date = ?', array($rr['id_room'], $days[$i]));
+            $av = $db->fetchRow('SELECT * FROM hotels_rooms_availability WHERE id_room = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rr['id_room'], $days[$i]));
             $allot = ($av && !is_null($av['allotment'])) ? (int)$av['allotment'] : (int)$room['allotment'];
             $free = $allot - ($av ? (int)$av['net_booked'] : 0);
             if(($av && !$av['active']) || $free <= 0 || is_null($base) || $base <= 0) {
                 $ok = false;
                 break;
             }
-            $nightly[] = 10000 == $mult ? $base : (int)floor((2 * $base * $mult + 10000) / 20000);
+            // дневная цена на число гостей (pricing_model = 2): последняя по id строка, price > 0
+            $dayPrice = 2 == $room['pricing_model'] ? $db->fetchOne('SELECT price FROM hotels_rates_occupancy_daily
+                WHERE id_rate_room = ? AND guests = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rrId, $guests, $days[$i])) : null;
+            if(!is_null($dayPrice) && false !== $dayPrice && $dayPrice > 0) {
+                $nightly[] = (int)round($dayPrice * 100);
+                $GLOBALS['referenceDailyHits'] = (isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0) + 1;
+            } else {
+                $nightly[] = 10000 == $mult ? $base : (int)floor((2 * $base * $mult + 10000) / 20000);
+            }
         }
         if(!$ok) {
             continue;

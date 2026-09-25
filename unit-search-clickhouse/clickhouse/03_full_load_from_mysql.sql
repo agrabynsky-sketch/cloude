@@ -14,6 +14,8 @@ SET external_table_functions_use_nulls = 1;
 SET mysql_datatypes_support_level = 'decimal';   -- DECIMAL из MySQL как Decimal, а не String
 SET join_use_nulls = 1;
 SET max_memory_usage = 8000000000;
+-- дедупликация (GROUP BY по ~всем строкам цен) сбрасывается на диск, если не помещается в память
+SET max_bytes_before_external_group_by = 1000000000;
 
 -- ---------- 1. staging: копии нужных таблиц MySQL (только активные записи и только даты горизонта)
 DROP TABLE IF EXISTS unit_search.stg_hotels;
@@ -41,27 +43,62 @@ INNER JOIN unit_search.stg_rates AS t ON t.id = rr.id_rate
 INNER JOIN unit_search.stg_hotels AS h ON h.id = ro.id_hotel
 WHERE t.id_hotel = ro.id_hotel;
 
+-- при дублях (в MySQL нет UNIQUE) берётся строка с максимальным id — целиком, через argMax по кортежу
+-- (argMax по отдельной Nullable-колонке пропустил бы NULL и взял значение из другой строки)
 DROP TABLE IF EXISTS unit_search.stg_prices;
 CREATE TABLE unit_search.stg_prices ENGINE = MergeTree ORDER BY (id_rate_room, date) AS
-SELECT id_rate_room, assumeNotNull(date) AS date, price, derive_type, derive_value, min_los, max_los, min_adv, max_adv, cta, ctd, active
-FROM mysql(unit_mysql, table = 'hotels_rates_prices')
-WHERE date >= toString(today()) AND date <= toString(today() + 365);
+SELECT id_rate_room, date,
+       t.1 AS price, t.2 AS derive_type, t.3 AS derive_value, t.4 AS min_los, t.5 AS max_los,
+       t.6 AS min_adv, t.7 AS max_adv, t.8 AS cta, t.9 AS ctd, t.10 AS active
+FROM
+(
+    SELECT id_rate_room, assumeNotNull(date) AS date,
+           argMax((price, derive_type, derive_value, min_los, max_los, min_adv, max_adv, cta, ctd, active), id) AS t
+    FROM mysql(unit_mysql, table = 'hotels_rates_prices')
+    WHERE date >= toString(today()) AND date <= toString(today() + 365)
+    GROUP BY id_rate_room, date
+);
 
 DROP TABLE IF EXISTS unit_search.stg_avail;
 CREATE TABLE unit_search.stg_avail ENGINE = MergeTree ORDER BY (id_room, date) AS
-SELECT id_room, assumeNotNull(date) AS date, allotment, net_booked, active
-FROM mysql(unit_mysql, table = 'hotels_rooms_availability')
-WHERE date >= toString(today()) AND date <= toString(today() + 365);
+SELECT id_room, date, t.1 AS allotment, t.2 AS net_booked, t.3 AS active
+FROM
+(
+    SELECT id_room, assumeNotNull(date) AS date, argMax((allotment, net_booked, active), id) AS t
+    FROM mysql(unit_mysql, table = 'hotels_rooms_availability')
+    WHERE date >= toString(today()) AND date <= toString(today() + 365)
+    GROUP BY id_room, date
+);
 
 -- надбавки за гостей, развёрнутые в колонки: m{g} = множитель в базисных пунктах (10000 = база), 0 = не продаётся
 DROP TABLE IF EXISTS unit_search.stg_occ;
 CREATE TABLE unit_search.stg_occ ENGINE = Memory AS
 SELECT id_rate_room,
        groupArray(guests) AS g_list,
-       groupArray(active) AS g_active,
-       groupArray(toInt64(round(amount * 100))) AS g_bp
-FROM mysql(unit_mysql, table = 'hotels_rates_occupancy')
+       groupArray(t.1) AS g_active,
+       groupArray(toInt64(round(t.2 * 100))) AS g_bp
+FROM
+(
+    SELECT id_rate_room, guests, argMax((active, amount), id) AS t      -- дубли (rate_room, guests): максимальный id
+    FROM mysql(unit_mysql, table = 'hotels_rates_occupancy')
+    GROUP BY id_rate_room, guests
+)
 GROUP BY id_rate_room;
+
+-- дневные цены на число гостей: одна строка на (рум-рейт, дата), массивы гостей и цен в копейках;
+-- при дублях (rate_room, date, guests) берётся строка с максимальным id; price = 0 оставляем — это "не задано"
+DROP TABLE IF EXISTS unit_search.stg_occ_daily;
+CREATE TABLE unit_search.stg_occ_daily ENGINE = MergeTree ORDER BY (id_rate_room, date) AS
+SELECT id_rate_room, date, groupArray(guests) AS dg, groupArray(price_minor) AS dp
+FROM
+(
+    SELECT id_rate_room, assumeNotNull(date) AS date, toUInt8(guests) AS guests,
+           argMax(toInt64(price * 100), id) AS price_minor
+    FROM mysql(unit_mysql, table = 'hotels_rates_occupancy_daily')
+    WHERE date >= toString(today()) AND date <= toString(today() + 365)
+    GROUP BY id_rate_room, date, guests
+)
+GROUP BY id_rate_room, date;
 
 -- ---------- 2. статические атрибуты рум-рейта (одна строка на рум-рейт)
 DROP TABLE IF EXISTS unit_search.stg_rr_ext;
@@ -78,6 +115,7 @@ SELECT
     toInt64(ifNull(t.min_los, 0)) AS rate_min_los, toInt64(ifNull(t.min_adv, 0)) AS rate_min_adv,
     toInt64(ifNull(t.derive_value, 0)) AS rate_derive_value,
     toUInt32(ifNull(ro.id_type, 0)) AS room_type_id, toInt64(ifNull(ro.allotment, 0)) AS room_allotment,
+    toUInt8(ifNull(ro.pricing_model, 1) = 2) AS occ_based,
     toUInt8(least(8, greatest(ifNull(ro.max_occupancy, 0), ifNull(ro.base_occupancy, 0), 1))) AS max_guests,
     -- множитель цены на g гостей в базисных пунктах: 0 = не продаётся, 10000 = базовая цена;
     -- pricing_model = 2 -> строка hotels_rates_occupancy (active = 0 выключает это число гостей)
@@ -98,4 +136,5 @@ DROP TABLE IF EXISTS unit_search.search_stay_new;
 CREATE TABLE unit_search.search_stay_new AS unit_search.search_stay;
 
 SELECT 'staged' AS status, (SELECT count() FROM unit_search.stg_rr_ext) AS rate_rooms,
-       (SELECT count() FROM unit_search.stg_prices) AS price_rows, (SELECT count() FROM unit_search.stg_avail) AS avail_rows;
+       (SELECT count() FROM unit_search.stg_prices) AS price_rows, (SELECT count() FROM unit_search.stg_avail) AS avail_rows,
+       (SELECT sum(length(dg)) FROM unit_search.stg_occ_daily) AS occupancy_daily_rows;

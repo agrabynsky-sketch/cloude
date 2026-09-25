@@ -8,4 +8,5 @@ DROP TABLE IF EXISTS unit_search.stg_rr;
 DROP TABLE IF EXISTS unit_search.stg_prices;
 DROP TABLE IF EXISTS unit_search.stg_avail;
 DROP TABLE IF EXISTS unit_search.stg_occ;
+DROP TABLE IF EXISTS unit_search.stg_occ_daily;
 DROP TABLE IF EXISTS unit_search.stg_rr_ext;
