@@ -3,9 +3,11 @@
 /**
  * Пример ZF1-контроллера поиска поверх ClickHouse (JSON API).
  *
- *   GET /search/hotels?checkin=2026-12-10&nights=7&guests=2&id_region=243836&stars=4,5&limit=30&offset=0
- *   GET /search/hotels?checkin=2026-12-10&checkout=2026-12-17&guests=2&id_hotel=1005,1006,1007
- *   GET /search/hotel?id_hotel=1005&checkin=2026-12-10&nights=7&guests=2
+ *   GET /search/hotels?checkin=2026-12-10&nights=7&adults=2&children=7,4&id_region=243836&stars=4,5&limit=30&offset=0
+ *   GET /search/hotels?checkin=2026-12-10&checkout=2026-12-17&guests=2&id_hotel=1005,1006,1007      (guests = взрослые без детей)
+ *   GET /search/hotels?checkin=2026-12-10&nights=7&id_region=243836&rooms=[{"adults":2,"children":[7]},{"adults":2}]
+ *   GET /search/hotels?...&rooms[0][adults]=2&rooms[0][children]=7,4&rooms[1][adults]=2
+ *   GET /search/hotel?id_hotel=1005&checkin=2026-12-10&nights=7&adults=2&children=7,4
  *
  * Клиент ClickHouse настраивается один раз в Bootstrap (см. README, раздел "Подключение в приложении"):
  *   Search_ClickHouse_Client::setDefault(Search_ClickHouse_Client::factory($config->clickhouse));
@@ -42,7 +44,9 @@ class SearchController extends Zend_Controller_Action {
         $hotelId = (int)$this->_getParam('id_hotel');
         $criteria = $this->_stayCriteria();
         $this->_respond(function() use ($hotelId, $criteria) {
-            return array('id_hotel' => $hotelId, 'items' => Search_Model_Stay::getInstance()->hotelRates($hotelId, $criteria));
+            $offer = Search_Model_Stay::getInstance()->hotelRooms($hotelId, $criteria);
+            // items — рум-рейты первого номера запроса (как раньше), rooms — по каждому номеру, best — самая дешёвая комбинация
+            return array('id_hotel' => $hotelId, 'items' => $offer['rooms'][0]['items'], 'rooms' => $offer['rooms'], 'best' => $offer['best']);
         });
     }
 
@@ -52,6 +56,13 @@ class SearchController extends Zend_Controller_Action {
             'guests'  => (int)$this->_getParam('guests', 2),
             'channel' => (int)$this->_getParam('channel', 1),
         );
+        // состав: rooms (JSON или rooms[i][adults]/rooms[i][children]), или adults + children для одного номера, или guests
+        foreach(array('rooms', 'adults', 'children') as $k) {
+            $v = $this->_getParam($k);
+            if(!is_null($v) && '' !== $v) {
+                $criteria[$k] = $v;
+            }
+        }
         if($this->_getParam('checkout')) {
             $criteria['checkout'] = (string)$this->_getParam('checkout');
         } else {

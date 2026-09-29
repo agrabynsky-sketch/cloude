@@ -10,3 +10,7 @@ DROP TABLE IF EXISTS unit_search.hotels_search_stg_availability;
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_occupancy;
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_occupancy_daily;
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_rates_rooms_ext;
+DROP TABLE IF EXISTS unit_search.hotels_search_stg_children_groups;
+DROP TABLE IF EXISTS unit_search.hotels_search_stg_children_prices;
+DROP TABLE IF EXISTS unit_search.hotels_search_stg_rate_children;
+DROP TABLE IF EXISTS unit_search.hotels_search_stg_children_days;

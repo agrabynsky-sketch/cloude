@@ -43,6 +43,24 @@ function expected_rates($db, $hotelId, array $stay, $today) {
     ksort($exp);
     return $exp;
 }
+// один номер с детьми: id_rate_room => цена
+function current_rooms(Search_Model_Stay $model, $hotelId, array $stay, array $room) {
+    $offer = $model->hotelRooms($hotelId, array('checkin' => $stay['checkin'], 'nights' => $stay['nights'], 'rooms' => array($room)));
+    $got = array();
+    foreach($offer['rooms'][0]['items'] as $row) {
+        $got[$row['id_rate_room']] = $row['price_minor'];
+    }
+    ksort($got);
+    return $got;
+}
+function expected_rooms($db, $hotelId, array $stay, array $room, $today) {
+    $exp = array();
+    foreach(referenceRooms($db, $hotelId, $stay['checkin'], $stay['nights'], $room['adults'], $room['children'], $today) as $rrId => $v) {
+        $exp[$rrId] = $v['total'];
+    }
+    ksort($exp);
+    return $exp;
+}
 function check($title, $expected, $got, &$failures) {
     $ok = $expected == $got;
     $failures += $ok ? 0 : 1;
@@ -209,6 +227,82 @@ try {
             check('9. duplicate price row: the newest (max id) wins', expected_rates($mysql, $hotelId, $stay, $today), current_rates($model, $hotelId, $stay), $failures);
         }
     }
+
+    // 11-16. дети, доп. кровати и доп. взрослые: демо-отель с политикой «как на экране» (0-2 / 3-6 / 7-12), per room,
+    //        с платной доп. кроватью взрослого и доступными номерами на 2 взрослых + 2 детей
+    $kids = array('adults' => 2, 'children' => array(8, 4));
+    $three = array('adults' => 3, 'children' => array());
+    $h3 = null;
+    for($h = $first + 8; $h < $first + 2000 && !$h3; $h += 10) {   // n = 9, 19, ...: вариант 0, нечётный -> все номера per room
+        $hotel = $mysql->fetchRow('SELECT extra_bed_adult_price, allow_children, children_min_age FROM hotels WHERE id = ?', array($h));
+        if($hotel && $hotel['extra_bed_adult_price'] > 0 && $hotel['allow_children'] && 0 == $hotel['children_min_age']
+            && count(expected_rooms($mysql, $h, $stay, $kids, $today)) >= 4 && count(expected_rooms($mysql, $h, $stay, $three, $today)) >= 2) {
+            $h3 = $h;
+        }
+    }
+    $touched[] = $h3;
+    sync($queue, $worker, $h3, 'test');
+    $initialKids = current_rooms($model, $h3, $stay, $kids);
+    $initialThree = current_rooms($model, $h3, $stay, $three);
+    check("11. hotel $h3: 2 adults + children 8, 4 == reference", expected_rooms($mysql, $h3, $stay, $kids, $today), $initialKids, $failures);
+
+    // 12. цена группы 7-12 на существующей кровати: 20% -> фикс 123.45 за ночь
+    $g712 = $mysql->fetchRow('SELECT * FROM hotels_children_groups WHERE id_hotel = ? AND id_rate = 0 AND age_from = 7 AND active = 1', array($h3));
+    $mysql->query('UPDATE hotels_children_groups SET bed_type = 2, bed_value = 123.45 WHERE id = ?', array($g712['id']));
+    $undo[] = function() use ($mysql, $g712) {
+        $mysql->query('UPDATE hotels_children_groups SET bed_type = ?, bed_value = ? WHERE id = ?', array($g712['bed_type'], $g712['bed_value'], $g712['id']));
+    };
+    sync($queue, $worker, $h3, 'children');
+    $after = current_rooms($model, $h3, $stay, $kids);
+    check('12. child group price changed -> cache updated', expected_rooms($mysql, $h3, $stay, $kids, $today), $after, $failures);
+    printf("   changed room-rates: %d\n", count(array_diff_assoc($after, $initialKids)));
+
+    // 13. календарное исключение: на даты проживания дети 7-12 бесплатно на BAR (и на существующей, и на доп. кровати)
+    $bar3 = (int)$mysql->fetchOne("SELECT id FROM hotels_rates WHERE id_hotel = ? AND title = 'Best Available Rate'", array($h3));
+    $mysql->query('INSERT INTO hotels_children_prices (id_hotel, id_group, id_rate, date_from, date_to, bed_type, bed_value, extra_type, extra_value, active)
+        VALUES (?, ?, ?, ?, ?, 1, 0, 1, 0, 1)', array($h3, $g712['id'], $bar3, $checkin, $lastNight));
+    $exId = (int)$mysql->lastInsertId();
+    $undo[] = function() use ($mysql, $exId) {
+        $mysql->query('DELETE FROM hotels_children_prices WHERE id = ?', array($exId));
+    };
+    sync($queue, $worker, $h3, 'children');
+    $after = current_rooms($model, $h3, $stay, $kids);
+    check('13. "children free" exception on BAR for the stay dates', expected_rooms($mysql, $h3, $stay, $kids, $today), $after, $failures);
+    printf("   changed room-rates: %d\n", count(array_diff_assoc($after, $initialKids)));
+
+    // 14. доплата за доп. взрослого (per room, 3-й взрослый) +50.00
+    $eb = $mysql->fetchOne('SELECT extra_bed_adult_price FROM hotels WHERE id = ?', array($h3));
+    $mysql->query('UPDATE hotels SET extra_bed_adult_price = extra_bed_adult_price + 50 WHERE id = ?', array($h3));
+    $undo[] = function() use ($mysql, $h3, $eb) {
+        $mysql->query('UPDATE hotels SET extra_bed_adult_price = ? WHERE id = ?', array($eb, $h3));
+    };
+    sync($queue, $worker, $h3, 'hotel');
+    $after = current_rooms($model, $h3, $stay, $three);
+    check('14. extra adult price +50 -> 3 adults cost more', expected_rooms($mysql, $h3, $stay, $three, $today), $after, $failures);
+    printf("   changed room-rates: %d of %d\n", count(array_diff_assoc($after, $initialThree)), count($after));
+
+    // 15. у номеров отеля убрали доп. кровати -> часть вариантов для 3 взрослых и для детей пропадает
+    $beds = $mysql->fetchPairs('SELECT id, extra_beds FROM hotels_rooms WHERE id_hotel = ?', array($h3));
+    $mysql->query('UPDATE hotels_rooms SET extra_beds = 0 WHERE id_hotel = ?', array($h3));
+    $undo[] = function() use ($mysql, $beds) {
+        foreach($beds as $id => $n) {
+            $mysql->query('UPDATE hotels_rooms SET extra_beds = ? WHERE id = ?', array($n, $id));
+        }
+    };
+    sync($queue, $worker, $h3, 'room');
+    check('15. no extra beds: 2 adults + 2 children', expected_rooms($mysql, $h3, $stay, $kids, $today), current_rooms($model, $h3, $stay, $kids), $failures);
+    check('    no extra beds: 3 adults', expected_rooms($mysql, $h3, $stay, $three, $today), current_rooms($model, $h3, $stay, $three), $failures);
+
+    // 16. отель перестал принимать детей -> с детьми не находится, без детей — находится
+    $mysql->query('UPDATE hotels SET allow_children = 0 WHERE id = ?', array($h3));
+    $undo[] = function() use ($mysql, $h3) {
+        $mysql->query('UPDATE hotels SET allow_children = 1 WHERE id = ?', array($h3));
+    };
+    sync($queue, $worker, $h3, 'hotel');
+    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'rooms' => array($kids), 'id_hotel' => array($h3)));
+    check('16. adults only hotel: not found with children', 0, $res['total'], $failures);
+    $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'adults' => 2, 'id_hotel' => array($h3)));
+    check('    ... and found without children', 1, $res['total'], $failures);
 } catch(Exception $e) {
     $rollback();
     foreach($touched as $h) {
@@ -222,7 +316,9 @@ $rollback();
 foreach($touched as $h) {
     sync($queue, $worker, $h, 'restore');
 }
-check('10. all test changes rolled back -> same as initial', $initial, current_rates($model, $hotelId, $stay), $failures);
+check('17. all test changes rolled back -> same as initial', $initial, current_rates($model, $hotelId, $stay), $failures);
+check('    children and 3 adults -> same as initial', array($initialKids, $initialThree),
+    array(current_rooms($model, $h3, $stay, $kids), current_rooms($model, $h3, $stay, $three)), $failures);
 
 echo $failures ? "\nFAILED: $failures\n" : "\nALL OK\n";
 exit($failures ? 1 : 0);

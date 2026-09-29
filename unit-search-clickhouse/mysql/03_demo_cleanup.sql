@@ -13,7 +13,7 @@ DELIMITER $$
 
 CREATE PROCEDURE hotels_search_demo_cleanup()
 BEGIN
-  DECLARE v_h1, v_h2, v_r1, v_r2, v_t1, v_t2, v_rr1, v_rr2 BIGINT;
+  DECLARE v_h1, v_h2, v_r1, v_r2, v_t1, v_t2, v_rr1, v_rr2, v_g1, v_g2, v_p1, v_p2 BIGINT;
   DECLARE v_rows INT DEFAULT 1;
 
   IF (SELECT COUNT(*) FROM hotels_search_demo_registry) = 0 THEN
@@ -24,6 +24,8 @@ BEGIN
   SELECT id_from, id_to INTO v_r1, v_r2   FROM hotels_search_demo_registry WHERE entity = 'hotels_rooms';
   SELECT id_from, id_to INTO v_t1, v_t2   FROM hotels_search_demo_registry WHERE entity = 'hotels_rates';
   SELECT id_from, id_to INTO v_rr1, v_rr2 FROM hotels_search_demo_registry WHERE entity = 'hotels_rates_rooms';
+  SELECT id_from, id_to INTO v_g1, v_g2   FROM hotels_search_demo_registry WHERE entity = 'hotels_children_groups';
+  SELECT id_from, id_to INTO v_p1, v_p2   FROM hotels_search_demo_registry WHERE entity = 'hotels_children_prices';
 
   SET v_rows = 1;
   WHILE v_rows > 0 DO
@@ -43,6 +45,8 @@ BEGIN
     SET v_rows = ROW_COUNT();
   END WHILE;
 
+  DELETE FROM hotels_children_prices WHERE id BETWEEN v_p1 AND v_p2;
+  DELETE FROM hotels_children_groups WHERE id BETWEEN v_g1 AND v_g2;
   DELETE FROM hotels_rates_occupancy WHERE id_rate_room BETWEEN v_rr1 AND v_rr2;
   DELETE FROM hotels_rates_rooms     WHERE id BETWEEN v_rr1 AND v_rr2;
   DELETE FROM hotels_rates           WHERE id BETWEEN v_t1 AND v_t2;

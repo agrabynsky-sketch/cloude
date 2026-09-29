@@ -34,6 +34,25 @@ list($code, $body) = dispatch("/search/hotel?id_hotel=$hotelId&checkin=$checkin&
 printf("GET /search/hotel?id_hotel=%d      -> HTTP %d, room-rates=%d, cheapest=%s\n", $hotelId, $code, count($body['items']), json_encode($body['items'][0]));
 $fail += (200 == $code && count($body['items']) > 0) ? 0 : 1;
 
+list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&adults=2&children=7,4&id_region=243836&limit=3");
+printf("GET /search/hotels (2 + 7, 4 y.o.)  -> HTTP %d, total=%d, first=%s\n", $code, $body['total'], json_encode($body['items'][0]));
+$fail += (200 == $code && count($body['items']) > 0) ? 0 : 1;
+
+$rooms = urlencode('[{"adults":2,"children":[5]},{"adults":2}]');
+list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&id_region=243836&rooms=$rooms&limit=3");
+printf("GET /search/hotels (2 rooms, JSON)  -> HTTP %d, total=%d, first=%s\n", $code, $body['total'], json_encode($body['items'][0]));
+$fail += (200 == $code && count($body['items']) > 0 && 2 == count($body['items'][0]['rooms'])) ? 0 : 1;
+$hotelId = $body['items'][0]['id_hotel'];
+$price = $body['items'][0]['price'];
+
+list($code, $body) = dispatch("/search/hotel?id_hotel=$hotelId&checkin=$checkin&nights=7&rooms[0][adults]=2&rooms[0][children]=5&rooms[1][adults]=2");
+printf("GET /search/hotel (2 rooms, rooms[i]) -> HTTP %d, rooms=%d, best=%s (search: %s)\n", $code, count($body['rooms']), $body['best']['price'], $price);
+$fail += (200 == $code && 2 == count($body['rooms']) && $body['best']['price'] == $price) ? 0 : 1;
+
+list($code, $body) = dispatch("/search/hotels?checkin=$checkin&nights=7&adults=2&children=18&id_region=243836");
+printf("GET /search/hotels (child age 18)   -> HTTP %d, %s\n", $code, json_encode($body));
+$fail += 400 == $code ? 0 : 1;
+
 list($code, $body) = dispatch("/search/hotels?checkin=2020-01-01&nights=7&guests=2&id_region=243836");
 printf("GET /search/hotels (past date)      -> HTTP %d, %s\n", $code, json_encode($body));
 $fail += 400 == $code ? 0 : 1;

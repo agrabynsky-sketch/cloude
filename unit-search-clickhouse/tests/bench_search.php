@@ -26,8 +26,23 @@ $cases = array(
     'search: region, all results (limit 1000)' => function(Search_Model_Stay $m, $d) {
         return $m->search(array('checkin' => $d, 'nights' => 7, 'guests' => 2, 'id_region' => 243836, 'limit' => 1000));
     },
+    'search: region, 7 nights, 2 adults + children 7, 4' => function(Search_Model_Stay $m, $d) {
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'adults' => 2, 'children' => array(7, 4), 'id_region' => 243836, 'limit' => 30));
+    },
+    'search: region, 7 nights, 2 rooms (2 + 5 y.o., 2)' => function(Search_Model_Stay $m, $d) {
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'id_region' => 243836, 'limit' => 30,
+            'rooms' => array(array('adults' => 2, 'children' => array(5)), array('adults' => 2))));
+    },
+    'search: region, 7 nights, 3 rooms (2 + 1 y.o., 2 + 9 y.o., 1)' => function(Search_Model_Stay $m, $d) {
+        return $m->search(array('checkin' => $d, 'nights' => 7, 'id_region' => 243836, 'limit' => 30,
+            'rooms' => array(array('adults' => 2, 'children' => array(1)), array('adults' => 2, 'children' => array(9)), array('adults' => 1))));
+    },
     'hotelRates: one hotel, 7 nights, 2 guests' => function(Search_Model_Stay $m, $d) use ($hotelIds) {
         return $m->hotelRates($hotelIds[mt_rand(0, count($hotelIds) - 1)], array('checkin' => $d, 'nights' => 7, 'guests' => 2));
+    },
+    'hotelRooms: one hotel, 7 nights, 2 rooms with children' => function(Search_Model_Stay $m, $d) use ($hotelIds) {
+        return $m->hotelRooms($hotelIds[mt_rand(0, count($hotelIds) - 1)], array('checkin' => $d, 'nights' => 7,
+            'rooms' => array(array('adults' => 2, 'children' => array(7, 4)), array('adults' => 2))));
     },
 );
 foreach(array('HTTP 8123' => $chHttp, 'MySQL 9004' => $chMysql) as $transport => $client) {
@@ -41,6 +56,6 @@ foreach(array('HTTP 8123' => $chHttp, 'MySQL 9004' => $chMysql) as $transport =>
             $fn($model, $d);
             $t[] = (microtime(true) - $s) * 1000;
         }
-        printf("  %-62s p50 %6.1f ms   p95 %6.1f ms\n", $name, pct($t, .5), pct($t, .95));
+        printf("  %-66s p50 %6.1f ms   p95 %6.1f ms\n", $name, pct($t, .5), pct($t, .95));
     }
 }
