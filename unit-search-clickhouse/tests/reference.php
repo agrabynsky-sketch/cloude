@@ -2,11 +2,16 @@
 /**
  * Эталонный расчёт "в лоб" по ночам прямо из MySQL — независимая от Search_Sync_Builder и Search_Occupancy реализация
  * тех же правил. Используется в verify_reference.php и queue_flow.php. При дублях строк берётся строка с максимальным id.
- * Размещение детей — полным перебором (каждому ребёнку существующая или доп. кровать), несколько номеров — полным
- * перебором рум-рейтов, поэтому эталон проверяет и жадный алгоритм размещения, и отсечение вариантов в поиске.
+ * Какие дети занимают свободные места цены номера — полным перебором подмножеств, несколько номеров — полным перебором
+ * рум-рейтов, поэтому эталон проверяет и выбор «самых дорогих детей», и отсечение вариантов в поиске.
  */
 
 define('REFERENCE_INFANT_AGE_MAX', 2);
+
+/** half up для неотрицательных: своя формула через float (суммы в копейках < 2^53) */
+function reference_round($x) {
+    return (int)floor($x + 0.5);
+}
 
 /**
  * Совместимость: взрослые без детей. Возвращает id_rate_room => array('total', 'nightly', ...).
@@ -17,7 +22,7 @@ function referenceRates($db, $hotelId, $checkin, $nights, $guests, $today, $chan
 
 /**
  * Эталон: доступные рум-рейты отеля для одного номера (взрослые + возраста детей).
- * @return array id_rate_room => array('total' => копейки, 'nightly' => цены взрослых по ночам, 'id_room', 'rooms_left')
+ * @return array id_rate_room => array('total' => копейки, 'nightly' => цены номера по ночам, 'id_room', 'rooms_left')
  */
 function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, $today, $channel = 1) {
     $days = array();
@@ -46,7 +51,37 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
     $price = function($rrId, $date) use ($db) {
         return $db->fetchRow('SELECT * FROM hotels_rates_prices WHERE id_rate_room = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rrId, $date));
     };
-    $extraAdult = is_null($hotel['extra_bed_adult_price']) ? null : (int)round($hotel['extra_bed_adult_price'] * 100);
+    $occRow = function($rrId, $g) use ($db) {
+        return $rrId ? $db->fetchRow('SELECT * FROM hotels_rates_occupancy WHERE id_rate_room = ? AND guests = ? ORDER BY id DESC LIMIT 1', array($rrId, $g)) : false;
+    };
+    $daily = function($rrId, $g, $date) use ($db) {
+        $v = $rrId ? $db->fetchOne('SELECT price FROM hotels_rates_occupancy_daily WHERE id_rate_room = ? AND guests = ? AND date = ?
+            ORDER BY id DESC LIMIT 1', array($rrId, $g, $date)) : false;
+        return (false !== $v && !is_null($v) && $v > 0) ? (int)round($v * 100) : null;
+    };
+    // строка окна к цене: процент или сумма, не меньше 0; нет строки — цена как есть
+    $apply = function($base, $row) {
+        if(!$row) {
+            return $base;
+        }
+        if(1 == $row['amount_type']) {
+            return max(0, $base + (int)round($row['amount'] * 100));
+        }
+        $bp = (int)round($row['amount'] * 100);
+        return 0 == $bp ? $base : max(0, reference_round($base * (10000 + $bp) / 10000));
+    };
+    // детская политика отеля: группа возраста — активная группа с наибольшим id среди покрывающих возраст
+    $kidsAll = array();
+    $a0 = (int)$adults;
+    foreach($ages as $age) {
+        $g = $db->fetchRow('SELECT * FROM hotels_children_groups WHERE active = 1 AND id_hotel = ? AND age_from <= ? AND age_to >= ?
+            ORDER BY id DESC LIMIT 1', array($hotelId, $age, $age));
+        if($g) {
+            $kidsAll[] = array($age, $g);
+        } else {
+            $a0++;                                              // возраст вне групп — взрослый
+        }
+    }
     $result = array();
     foreach($rrs as $rrId => $rr) {
         $room = $rooms[$rr['id_room']];
@@ -54,140 +89,97 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
         if(!((int)$rate['channel_mask'] & $channel) || 'public' != $rate['visibility'] || $rate['id_hotel'] != $room['id_hotel']) {
             continue;
         }
-        // детские группы тарифа (свои группы тарифа, иначе группы отеля) и группа каждого ребёнка
-        $groupRate = $db->fetchOne('SELECT COUNT(*) FROM hotels_children_groups WHERE active = 1 AND id_hotel = ? AND id_rate = ?',
-            array($hotelId, $rate['id'])) ? (int)$rate['id'] : 0;
-        $a = (int)$adults;
-        $kids = array();       // array(age, group row)
-        foreach($ages as $age) {
-            $g = $db->fetchRow('SELECT * FROM hotels_children_groups WHERE active = 1 AND id_hotel = ? AND id_rate = ?
-                AND age_from <= ? AND age_to >= ? ORDER BY id DESC LIMIT 1', array($hotelId, $groupRate, $age, $age));
-            if($g) {
-                $kids[] = array($age, $g);
-            } else {
-                $a++;                                           // возраст вне групп — взрослый
-            }
+        $parentRrId = null;
+        $parentRr = null;
+        if($rate['id_parent']) {
+            $parentRr = $db->fetchRow('SELECT * FROM hotels_rates_rooms WHERE id_rate = ? AND id_room = ? ORDER BY id LIMIT 1',
+                array($rate['id_parent'], $rr['id_room']));
+            $parentRrId = $parentRr ? (int)$parentRr['id'] : null;
         }
-        // места и лимиты номера
-        $baseOcc = max(1, (int)$room['base_occupancy']);
+        // лимиты номера; base_occupancy: свой рум-рейта (у производного — родителя), иначе номера
+        $rrBase = $rate['id_parent'] ? ($parentRr ? $parentRr['base_occupancy'] : null) : $rr['base_occupancy'];
+        $baseOcc = max(1, (int)(is_null($rrBase) ? $room['base_occupancy'] : $rrBase));
         $maxAdults = (int)$room['max_adults'] > 0 ? (int)$room['max_adults'] : max((int)$room['max_occupancy'], $baseOcc);
-        $R = (int)$room['places_regular'] > 0 ? (int)$room['places_regular'] : max($baseOcc, $maxAdults);
-        $E = (int)$room['extra_beds'];
-        $S = (int)$room['share_slots'];
         $maxOcc = (int)$room['max_occupancy'] > 0 ? (int)$room['max_occupancy'] : $maxAdults + (int)$room['max_children'];
-        $perGuest = 2 == $room['pricing_model'];
-        // продаётся ли рум-рейт на g взрослых и множитель (per guest)
-        $sellable = function($g) use ($db, $rrId, $maxAdults, $R, $E, $maxOcc, $perGuest, $baseOcc, $extraAdult) {
-            if($g < 1 || $g > 8 || $g > $maxAdults || $g > $R + $E || $g > $maxOcc) {
+        $sold = function($g) use ($rrId, $parentRrId, $rate, $maxAdults, $maxOcc, $occRow) {
+            if($g < 1 || $g > 8 || $g > $maxAdults || $g > $maxOcc) {
                 return false;
             }
-            if($perGuest) {
-                $occ = $db->fetchRow('SELECT * FROM hotels_rates_occupancy WHERE id_rate_room = ? AND guests = ? ORDER BY id DESC LIMIT 1', array($rrId, $g));
-                return $occ ? ($occ['active'] ? 10000 + (int)round($occ['amount'] * 100) : false) : 10000;
+            $own = $occRow($rrId, $g);
+            if($own) {
+                return (bool)$own['active'];
             }
-            return ($g <= $baseOcc || !is_null($extraAdult)) ? 10000 : false;
+            if($rate['id_parent']) {
+                $par = $occRow($parentRrId, $g);
+                return !$par || (bool)$par['active'];
+            }
+            return true;
         };
-        $multA = $sellable($a);
-        if(false === $multA) {
+        $a = $a0;
+        $placed = 0;
+        $infants = 0;
+        foreach($kidsAll as $kid) {
+            $inf = $kid[0] <= REFERENCE_INFANT_AGE_MAX;
+            $infants += $inf ? 1 : 0;
+            $placed += ($inf && $room['is_without_infants']) ? 0 : 1;
+        }
+        if($a > 8 || $placed > (int)$room['max_children'] || $a + $placed > $maxOcc
+            || (!is_null($room['max_infants']) && $infants > (int)$room['max_infants'])) {
             continue;
         }
-        $infants = array();
-        $placed = array();
-        foreach($kids as $kid) {
-            if($room['is_without_infants'] && $kid[0] <= REFERENCE_INFANT_AGE_MAX) {
-                $infants[] = $kid;
-            } else {
-                $placed[] = $kid;
-            }
+        $g = null;
+        for($x = $a; $x <= $a + $placed && is_null($g); $x++) {
+            $g = $sold($x) ? $x : null;
         }
-        if(count($placed) > (int)$room['max_children'] || $a + count($placed) > $maxOcc) {
+        if(is_null($g)) {
             continue;
         }
-        $mult1 = $sellable(1);
-        $multBase = $sellable($baseOcc);
-        $parentRrId = null;
-        if($rate['id_parent']) {
-            $parentRrId = $db->fetchOne('SELECT id FROM hotels_rates_rooms WHERE id_rate = ? AND id_room = ?', array($rate['id_parent'], $rr['id_room']));
-        }
-        // цена ночи за g взрослых
-        $nightPrice = function($g, $mult, $base, $date) use ($db, $rrId, $perGuest, $baseOcc, $extraAdult) {
-            if(!$perGuest) {
-                return $base + max(0, $g - $baseOcc) * (int)$extraAdult;
-            }
-            $dayPrice = $db->fetchOne('SELECT price FROM hotels_rates_occupancy_daily WHERE id_rate_room = ? AND guests = ? AND date = ?
-                ORDER BY id DESC LIMIT 1', array($rrId, $g, $date));
-            if(!is_null($dayPrice) && false !== $dayPrice && $dayPrice > 0) {
-                $GLOBALS['referenceDailyHits'] = (isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0) + 1;
-                return (int)round($dayPrice * 100);
-            }
-            return 10000 == $mult ? $base : max(0, (int)floor((2 * $base * $mult + 10000) / 20000));
-        };
-        $ok = true;
-        $nightly = array();
-        $roomsLeft = PHP_INT_MAX;
-        $kidBed = array();     // индекс ребёнка => сумма за проживание на существующей кровати (null = нельзя)
-        $kidExtra = array();
-        foreach($kids as $n => $kid) {
-            $kidBed[$n] = 0;
-            $kidExtra[$n] = 0;
-        }
-        for($i = 0; $i < $nights && $ok; $i++) {
+        // цена номера за $guests гостей в ночь $i (null — ночь не продаётся)
+        $nightPrice = function($guests, $i) use ($days, $rrId, $parentRrId, $rate, $price, $occRow, $daily, $apply) {
             $own = $price($rrId, $days[$i]);
+            $parBase = null;
+            $dv = 0;
             $base = null;
             if(!$rate['id_parent']) {
                 if($own && $own['active'] && !is_null($own['price'])) {
                     $base = (int)round($own['price'] * 100);
                 }
             } elseif($own && !$own['active']) {
-                $base = null;
+                return null;
             } elseif($own && !is_null($own['price']) && 0 == $own['derive_type']) {
                 $base = (int)round($own['price'] * 100);
             } elseif($parentRrId && ($par = $price($parentRrId, $days[$i])) && $par['active'] && !is_null($par['price'])) {
+                $parBase = (int)round($par['price'] * 100);
                 $dv = ($own && 4 == $own['derive_type']) ? (int)$own['derive_value'] : -(int)$rate['derive_value'];
-                $x = (int)round($par['price'] * 100) * (100 + $dv);
-                $base = (int)floor((2 * $x + 100) / 200);            // half up
+                $base = reference_round($parBase * (100 + $dv) / 100);
             }
+            if(is_null($base) || $base <= 0) {
+                return null;
+            }
+            $d = $daily($rrId, $guests, $days[$i]);
+            if(!is_null($d)) {
+                $GLOBALS['referenceDailyHits'] = (isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0) + 1;
+                return array($base, $d);
+            }
+            $ownRow = $occRow($rrId, $guests);
+            if($ownRow || !$rate['id_parent']) {
+                return array($base, $apply($base, $ownRow));
+            }
+            $parRow = $occRow($parentRrId, $guests);
+            if(is_null($parBase)) {
+                return array($base, $apply($base, $parRow));             // своя цена ночи: строка родителя к своей цене
+            }
+            $pd = $daily($parentRrId, $guests, $days[$i]);
+            return array($base, reference_round((is_null($pd) ? $apply($parBase, $parRow) : $pd) * (100 + $dv) / 100));
+        };
+        $ok = true;
+        $roomsLeft = PHP_INT_MAX;
+        for($i = 0; $i < $nights && $ok; $i++) {
             $av = $db->fetchRow('SELECT * FROM hotels_rooms_availability WHERE id_room = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rr['id_room'], $days[$i]));
             $allot = ($av && !is_null($av['allotment'])) ? (int)$av['allotment'] : (int)$room['allotment'];
             $free = $allot - ($av ? (int)$av['net_booked'] : 0);
-            if(($av && !$av['active']) || $free <= 0 || is_null($base) || $base <= 0) {
-                $ok = false;
-                break;
-            }
+            $ok = !($av && !$av['active']) && $free > 0 && !is_null($nightPrice($g, $i));
             $roomsLeft = min($roomsLeft, $free);
-            $nightly[] = $nightPrice($a, $multA, $base, $days[$i]);
-            if(empty($kids)) {
-                continue;
-            }
-            // одноместная цена ночи: за 1 взрослого, иначе за base_occupancy, иначе база
-            if(false !== $mult1) {
-                $single = $nightPrice(1, $mult1, $base, $days[$i]);
-            } elseif(false !== $multBase) {
-                $single = $nightPrice($baseOcc, $multBase, $base, $days[$i]);
-            } else {
-                $single = $base;
-            }
-            foreach($kids as $n => $kid) {
-                $g = $kid[1];
-                $o = $db->fetchRow('SELECT * FROM hotels_children_prices WHERE active = 1 AND id_group = ? AND id_hotel = ? AND (id_rate = 0 OR id_rate = ?)
-                    AND (date_from IS NULL OR date_from <= ?) AND (date_to IS NULL OR date_to >= ?)
-                    ORDER BY (id_rate = ?) DESC, (date_from IS NOT NULL OR date_to IS NOT NULL) DESC, id DESC LIMIT 1',
-                    array($g['id'], $g['id_hotel'], $rate['id'], $days[$i], $days[$i], $rate['id']));
-                $rule = $o ? $o : $g;
-                $cost = function($type, $value) use ($single) {
-                    $v = (int)round($value * 100);
-                    switch((int)$type) {
-                        case 1: return 0;
-                        case 2: return max(0, $v);
-                        case 3: return (int)floor((2 * $single * max(0, $v) + 10000) / 20000);
-                        default: return null;
-                    }
-                };
-                $b = $cost($rule['bed_type'], $rule['bed_value']);
-                $e = $cost($rule['extra_type'], $rule['extra_value']);
-                $kidBed[$n] = (is_null($kidBed[$n]) || is_null($b)) ? null : $kidBed[$n] + $b;
-                $kidExtra[$n] = (is_null($kidExtra[$n]) || is_null($e)) ? null : $kidExtra[$n] + $e;
-            }
         }
         if(!$ok) {
             continue;
@@ -205,52 +197,63 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
         if($dep && $dep['ctd']) {
             continue;
         }
-        // дети: инфанты (is_without_infants) — место не занимают; остальные — полный перебор мест
-        $kidsCost = 0;
-        foreach($kids as $n => $kid) {
-            if($room['is_without_infants'] && $kid[0] <= REFERENCE_INFANT_AGE_MAX) {
-                $allowed = array_filter(array($kidBed[$n], $kidExtra[$n]), function($v) {
-                    return !is_null($v);
-                });
-                if(empty($allowed)) {
-                    continue 2;
+        $stay = function($guests) use ($nights, $nightPrice) {
+            $list = array();
+            for($i = 0; $i < $nights; $i++) {
+                $p = $nightPrice($guests, $i);
+                $list[] = $p[1];
+            }
+            return $list;
+        };
+        $nightly = $stay($g);
+        $roomPrice = array_sum($nightly);
+        // цены детей от цены номера за g гостей; свободные места цены (g - a) — полный перебор подмножеств детей с местом
+        $kidPrice = array();
+        $kidPlaced = array();
+        foreach($kidsAll as $n => $kid) {
+            $v = (int)round($kid[1]['price_value'] * 100);
+            switch((int)$kid[1]['price_type']) {
+                case 2: $kidPrice[$n] = $v * $nights; break;
+                case 3: $kidPrice[$n] = reference_round($roomPrice * $v / 10000); break;
+                case 4: $kidPrice[$n] = reference_round($roomPrice * $v / 10000 / $g); break;
+                case 5: $kidPrice[$n] = reference_round($roomPrice / $g); break;
+                default: $kidPrice[$n] = 0;
+            }
+            $kidPlaced[$n] = !($kid[0] <= REFERENCE_INFANT_AGE_MAX && $room['is_without_infants']);
+        }
+        $best = null;
+        for($mask = 0; $mask < (1 << count($kidsAll)); $mask++) {
+            $size = 0;
+            foreach($kidsAll as $n => $kid) {
+                if(($mask >> $n) & 1) {
+                    $size += $kidPlaced[$n] ? 1 : 100;
                 }
-                $c = min($allowed);                             // инфант: меньшая из разрешённых цен
-                $kidsCost += $c;
             }
-        }
-        $placedIdx = array();
-        foreach($kids as $n => $kid) {
-            if(!($room['is_without_infants'] && $kid[0] <= REFERENCE_INFANT_AGE_MAX)) {
-                $placedIdx[] = $n;
+            if($size != $g - $a) {
+                continue;
             }
-        }
-        $bedSlots = max(0, $R - $a) + $S;
-        $extraSlots = $E - max(0, $a - $R);
-        $bestPlacement = null;
-        for($mask = 0; $mask < (1 << count($placedIdx)); $mask++) {
-            $sum = 0;
-            $beds = 0;
-            $extras = 0;
-            foreach($placedIdx as $bit => $n) {
-                $onBed = ($mask >> $bit) & 1;
-                $c = $onBed ? $kidBed[$n] : $kidExtra[$n];
-                if(is_null($c)) {
-                    continue 2;
+            $sum = $roomPrice;
+            $paying = 0;
+            foreach($kidsAll as $n => $kid) {
+                if(!(($mask >> $n) & 1)) {
+                    $sum += $kidPrice[$n];
+                    $paying += $kidPrice[$n] > 0 ? 1 : 0;
                 }
-                $sum += $c;
-                $beds += $onBed;
-                $extras += 1 - $onBed;
             }
-            if($beds <= $bedSlots && $extras <= $extraSlots && (is_null($bestPlacement) || $sum < $bestPlacement)) {
-                $bestPlacement = $sum;
+            if(is_null($best) || $sum < $best[0]) {
+                $best = array($sum, $paying);
             }
         }
-        if(is_null($bestPlacement)) {
-            continue;
+        list($total, $paying) = $best;
+        // не дороже, чем если бы платящие дети были взрослыми
+        if($paying > 0 && $sold($g + $paying)) {
+            $asAdults = $stay($g + $paying);
+            if(array_sum($asAdults) < $total) {
+                $total = array_sum($asAdults);
+                $nightly = $asAdults;
+            }
         }
-        $result[$rrId] = array('total' => array_sum($nightly) + $kidsCost + $bestPlacement, 'nightly' => $nightly,
-            'id_room' => (int)$rr['id_room'], 'rooms_left' => $roomsLeft);
+        $result[$rrId] = array('total' => $total, 'nightly' => $nightly, 'id_room' => (int)$rr['id_room'], 'rooms_left' => $roomsLeft);
     }
     ksort($result);
     return $result;

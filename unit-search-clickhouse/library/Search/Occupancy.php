@@ -1,21 +1,28 @@
 <?php
 
 /**
- * Размещение гостей в номере и цена номера за проживание (взрослые, дети, доп. кровати), плюс выбор
- * самой дешёвой комбинации, когда в запросе несколько номеров.
+ * Состав номера и цена номера за проживание (взрослые, дети, младенцы), плюс выбор самой дешёвой комбинации,
+ * когда в запросе несколько номеров.
  *
  * Одна и та же логика используется в карточке отеля (Search_Model_Stay::hotelRooms), при перерасчёте брони
- * и повторена в SQL поиска (Search_Model_Stay::search). Правила — README, раздел «Дети, доп. кровати и несколько номеров».
+ * и повторена в SQL поиска (Search_Model_Stay::search). Правила — README, раздел «Вместимость, дети и несколько номеров».
  *
  * Все суммы — в копейках валюты отеля, за всё проживание.
  */
 class Search_Occupancy {
-    const INFANT_AGE_MAX = 2;               // инфант: 0-2 полных года (0-2,99)
+    const INFANT_AGE_MAX = 2;               // младенец: 0-2 полных года (0-2,99)
     const MAX_CHILD_AGE = 17;
-    const MAX_ADULTS = 8;                   // колонки c1..c8
+    const MAX_ADULTS = 8;                   // гостей в цене номера (колонки c1..c8) и взрослых в номере запроса
     const MAX_CHILDREN = 6;                 // детей в одном номере запроса
     const MAX_ROOMS = 4;                    // номеров в одном запросе (колонки k2..k4)
-    const NOT_ALLOWED = 1099511627776;      // 2^40: сумма детской цены >= 2^40 = размещение запрещено хотя бы в одну ночь
+    const NO_LIMIT = 255;                   // max_infants без лимита; children_min_age = 255 — отель не принимает детей
+
+    // типы детской цены (hotels_children_groups.price_type)
+    const CHILD_FREE = 1;
+    const CHILD_FIXED = 2;                  // фикс за ночь
+    const CHILD_ROOM_PERCENT = 3;           // % тарифа на номер
+    const CHILD_ADULT_PERCENT = 4;          // % цены взрослого: цена номера / число гостей × %
+    const CHILD_ADULT_FULL = 5;             // полная цена взрослого: цена номера / число гостей
 
     /**
      * Составы номеров из параметров запроса.
@@ -71,26 +78,37 @@ class Search_Occupancy {
     }
 
     /**
-     * Цена одного номера за проживание или null, если состав в номер не размещается.
+     * Цена одного номера за проживание или null, если состав в номер не подходит.
+     *
+     * Правила:
+     *  - возраст вне групп детской политики — взрослый (и для цены, и для вместимости); ребёнок младше children_min_age
+     *    или отель без детей (children_min_age = 255) — номер не подходит;
+     *  - младенец (0-2 в группе) не больше max_infants; при infants_excluded он не считается в max_children / max_occupancy
+     *    и не занимает место; остальные дети занимают место: детей <= max_children, взрослые + дети <= max_occupancy;
+     *  - цена номера берётся за g = число взрослых гостей; если на столько не продаётся — за ближайшее большее продаваемое g,
+     *    свободные места (g − взрослые) бесплатно занимают самые дорогие дети с местом; не хватает детей — номер не подходит;
+     *  - ребёнок платит по типу цены своей группы от цены номера за g гостей за проживание (округление half up один раз):
+     *    бесплатно / фикс × ночей / цена × % / цена / g × % / цена / g;
+     *  - итог не дороже, чем если бы платящие дети были взрослыми: min(итог, цена номера за g + платящих), если на столько продаётся.
      *
      * @param array $rr рум-рейт на выбранные даты:
-     *   gmask             бит g = продаётся на g взрослых (в нём уже max_adults, R + E, max_occupancy, цена за g)
-     *   places_regular    R — основные места;  extra_beds — E;  share_slots — S (детей в кроватях со взрослыми)
-     *   max_children, max_occupancy, infants_excluded (hotels_rooms.is_without_infants)
+     *   gmask             бит g = продаётся на g гостей (в нём уже max_adults, max_occupancy, выключенные строки окна)
+     *   max_children, max_occupancy, max_infants (255 = без лимита), infants_excluded (hotels_rooms.is_without_infants)
      *   children_min_age  255 = отель не принимает детей
      *   age_group         array(возраст 0..17 => номер группы j, 0 = взрослый)
-     *   adults            array(g => цена за g взрослых за проживание)
-     *   bed, extra        array(j => цена ребёнка группы j за проживание на существующей / доп. кровати; >= NOT_ALLOWED = нельзя)
+     *   child_type, child_value  array(j => тип цены группы / значение: фикс — копейки за ночь, процент — базисные пункты)
+     *   adults            array(g => цена номера за g гостей за проживание)
+     *   nights            ночей
      * @param int $adults взрослых в запросе
      * @param array $ages возраста детей
-     * @return array|null array('total', 'adults' (с учётом детей, считающихся взрослыми), 'price_adults', 'price_children',
-     *                          'extra_beds_adults', 'children' => array(array('age', 'group', 'place' => bed|extra|none, 'price')))
+     * @return array|null array('total', 'adults' (с детьми, считающимися взрослыми), 'guests' (за сколько гостей взята цена номера),
+     *                          'price_adults' (цена номера), 'price_children', 'capped' (дети посчитаны как взрослые),
+     *                          'children' => array(array('age', 'group', 'place' => bed|free|none|adult, 'price', 'as_adult')))
      */
     public static function price(array $rr, $adults, array $ages) {
         $a = (int)$adults;
-        $children = array();      // возраст => план размещения, по порядку запроса
-        $placed = array();        // индексы детей, которым нужно место
-        $fixed = 0;
+        $children = array();      // по порядку запроса
+        $kids = array();          // индексы детей из групп
         foreach(array_values($ages) as $n => $age) {
             if($age < $rr['children_min_age']) {
                 return null;                                   // ребёнок младше минимального возраста / дети не принимаются
@@ -98,87 +116,107 @@ class Search_Occupancy {
             $j = isset($rr['age_group'][$age]) ? (int)$rr['age_group'][$age] : 0;
             if(0 == $j) {
                 $a++;                                          // возраст вне групп — взрослый
-                $children[$n] = array('age' => $age, 'group' => 0, 'place' => 'adult', 'price' => 0);
+                $children[$n] = array('age' => $age, 'group' => 0, 'place' => 'adult', 'price' => 0, 'as_adult' => false);
                 continue;
             }
-            $bed = self::_allowed($rr['bed'][$j]);
-            $extra = self::_allowed($rr['extra'][$j]);
-            $children[$n] = array('age' => $age, 'group' => $j, 'place' => null, 'price' => 0, 'bed' => $bed, 'extra' => $extra);
-            if($rr['infants_excluded'] && $age <= self::INFANT_AGE_MAX) {
-                // инфант: место и лимиты не занимает, платит меньшую из разрешённых цен своей группы (обычно 0)
-                if(is_null($bed) && is_null($extra)) {
-                    return null;
-                }
-                $children[$n]['place'] = 'none';
-                $children[$n]['price'] = is_null($bed) ? $extra : (is_null($extra) ? $bed : min($bed, $extra));
-                continue;
-            }
-            $placed[] = $n;
+            $infant = $age <= self::INFANT_AGE_MAX;
+            $children[$n] = array('age' => $age, 'group' => $j, 'place' => ($infant && $rr['infants_excluded']) ? 'none' : 'bed',
+                'price' => 0, 'as_adult' => false, 'infant' => $infant);
+            $kids[] = $n;
         }
-        if($a < 1 || $a > self::MAX_ADULTS || !(($rr['gmask'] >> $a) & 1)) {
-            return null;                                       // здесь же max_adults, A <= R + E, per room без цены доп. взрослого
-        }
-        if(count($placed) > $rr['max_children'] || $a + count($placed) > $rr['max_occupancy']) {
+        if($a < 1 || $a > self::MAX_ADULTS) {
             return null;
         }
-        $bedLeft = max(0, $rr['places_regular'] - $a) + $rr['share_slots'];    // свободные основные места + места рядом со взрослыми
-        $extraLeft = $rr['extra_beds'] - max(0, $a - $rr['places_regular']);   // доп. кровати, не занятые взрослыми
-        $flex = array();
-        foreach($placed as $n) {
-            $c = $children[$n];
-            if(is_null($c['bed']) && is_null($c['extra'])) {
-                return null;
-            }
-            if(is_null($c['extra'])) {                          // только существующая кровать
-                $bedLeft--;
-                $children[$n]['place'] = 'bed';
-                $children[$n]['price'] = $c['bed'];
-            } elseif(is_null($c['bed'])) {                      // только доп. кровать
-                $extraLeft--;
-                $children[$n]['place'] = 'extra';
-                $children[$n]['price'] = $c['extra'];
-            } else {
-                $flex[] = $n;
-            }
+        $placed = 0;
+        $infants = 0;
+        foreach($kids as $n) {
+            $placed += 'bed' == $children[$n]['place'] ? 1 : 0;
+            $infants += $children[$n]['infant'] ? 1 : 0;
         }
-        if($bedLeft < 0 || $extraLeft < 0) {
+        if($placed > $rr['max_children'] || $a + $placed > $rr['max_occupancy']
+            || (self::NO_LIMIT != $rr['max_infants'] && $infants > $rr['max_infants'])) {
             return null;
         }
-        // остальные дети: на существующие кровати — те, кому это выгоднее всего (доп. кровать − существующая, по убыванию);
-        // их число m между lo (сколько не влезет на доп. кровати) и hi (сколько влезет на существующие) — это минимум стоимости
-        usort($flex, function($x, $y) use ($children) {
-            $gx = $children[$x]['extra'] - $children[$x]['bed'];
-            $gy = $children[$y]['extra'] - $children[$y]['bed'];
-            return $gx == $gy ? $x - $y : ($gx > $gy ? -1 : 1);
+        // за сколько гостей берётся цена номера: взрослые, иначе ближайшее большее продаваемое число (места займут дети)
+        $g = 0;
+        for($x = $a; $x <= min(self::MAX_ADULTS, $a + $placed) && !$g; $x++) {
+            $g = (($rr['gmask'] >> $x) & 1) ? $x : 0;
+        }
+        if(!$g) {
+            return null;
+        }
+        $roomPrice = (int)$rr['adults'][$g];
+        $bed = array();
+        foreach($kids as $n) {
+            $j = $children[$n]['group'];
+            $children[$n]['price'] = self::childPrice($rr['child_type'][$j], $rr['child_value'][$j], $roomPrice, $g, $rr['nights']);
+            if('bed' == $children[$n]['place']) {
+                $bed[] = $n;
+            }
+        }
+        // свободные места цены номера бесплатно занимают самые дорогие дети
+        usort($bed, function($x, $y) use ($children) {
+            $px = $children[$x]['price'];
+            $py = $children[$y]['price'];
+            return $px == $py ? $x - $y : ($px > $py ? -1 : 1);
         });
-        $lo = max(0, count($flex) - $extraLeft);
-        $hi = min(count($flex), $bedLeft);
-        if($lo > $hi) {
-            return null;
+        foreach(array_slice($bed, 0, $g - $a) as $n) {
+            $children[$n]['place'] = 'free';
+            $children[$n]['price'] = 0;
         }
-        $m = 0;
-        foreach($flex as $n) {
-            $m += $children[$n]['extra'] > $children[$n]['bed'] ? 1 : 0;
+        $total = $roomPrice;
+        $paying = 0;
+        foreach($children as $c) {
+            $total += $c['price'];
+            $paying += $c['price'] > 0 ? 1 : 0;
         }
-        $m = min(max($m, $lo), $hi);
-        foreach($flex as $i => $n) {
-            $children[$n]['place'] = $i < $m ? 'bed' : 'extra';
-            $children[$n]['price'] = $i < $m ? $children[$n]['bed'] : $children[$n]['extra'];
+        // не дороже, чем если бы платящие дети были взрослыми
+        $guests = $g;
+        $capped = $paying > 0 && $g + $paying <= self::MAX_ADULTS && (($rr['gmask'] >> ($g + $paying)) & 1)
+            && $rr['adults'][$g + $paying] < $total;
+        if($capped) {
+            $guests = $g + $paying;
+            $total = (int)$rr['adults'][$guests];
+            foreach($children as $n => $c) {
+                if($c['price'] > 0) {
+                    $children[$n]['price'] = 0;
+                    $children[$n]['as_adult'] = true;
+                }
+            }
         }
-        $priceChildren = 0;
         foreach($children as $n => $c) {
-            unset($children[$n]['bed'], $children[$n]['extra']);
-            $priceChildren += $c['price'];
+            unset($children[$n]['infant']);
         }
-        $priceAdults = (int)$rr['adults'][$a];
+        $priceAdults = $capped ? $total : $roomPrice;
         return array(
-            'total'             => $priceAdults + $priceChildren,
-            'adults'            => $a,
-            'price_adults'      => $priceAdults,
-            'price_children'    => $priceChildren,
-            'extra_beds_adults' => max(0, $a - $rr['places_regular']),
-            'children'          => array_values($children),
+            'total'          => $total,
+            'adults'         => $a,
+            'guests'         => $guests,
+            'price_adults'   => $priceAdults,
+            'price_children' => $total - $priceAdults,
+            'capped'         => $capped,
+            'children'       => array_values($children),
         );
+    }
+
+    /**
+     * Цена ребёнка за проживание по типу цены его группы, half up.
+     * @param int $roomPrice цена номера за $guests гостей за проживание
+     * @param int $value фикс — копейки за ночь, процент — базисные пункты (50% = 5000)
+     */
+    public static function childPrice($type, $value, $roomPrice, $guests, $nights) {
+        switch((int)$type) {
+            case self::CHILD_FIXED:
+                return $value * $nights;
+            case self::CHILD_ROOM_PERCENT:
+                return self::_roundDiv($roomPrice * $value, 10000);
+            case self::CHILD_ADULT_PERCENT:
+                return self::_roundDiv($roomPrice * $value, 10000 * $guests);
+            case self::CHILD_ADULT_FULL:
+                return self::_roundDiv($roomPrice, $guests);
+            default:
+                return 0;
+        }
     }
 
     /**
@@ -254,7 +292,8 @@ class Search_Occupancy {
         }
     }
 
-    protected static function _allowed($value) {
-        return (is_null($value) || $value >= self::NOT_ALLOWED) ? null : (int)$value;
+    protected static function _roundDiv($a, $b) {
+        $a += (int)($b / 2);
+        return ($a - $a % $b) / $b;
     }
 }

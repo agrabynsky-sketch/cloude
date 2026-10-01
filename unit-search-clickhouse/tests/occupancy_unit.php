@@ -3,7 +3,8 @@
  * Проверка Search_Occupancy без базы: случайные номера и составы против полного перебора.
  *   php tests/occupancy_unit.php [cases=20000] [seed=1]
  *
- *   price()                — жадное размещение детей (обязательные места, затем по выгоде) == минимум полного перебора;
+ *   price()                — «свободные места цены номера занимают самые дорогие дети» == минимум полного перебора
+ *                            подмножеств детей; ближайшее продаваемое число гостей; лимиты; цены 5 типов; «не дороже взрослых»;
  *   cheapestCombination()  — отсечение до K лучших типов номера == полный перебор всех вариантов с учётом наличия;
  *   rooms()                — разбор параметров запроса.
  */
@@ -14,13 +15,22 @@ require __DIR__ . '/../library/Search/Occupancy.php';
 
 $cases = isset($argv[1]) ? (int)$argv[1] : 20000;
 mt_srand(isset($argv[2]) ? (int)$argv[2] : 1);
-$big = Search_Occupancy::NOT_ALLOWED;
 
-/** полный перебор: каждому ребёнку с местом — существующая или доп. кровать */
+/** цена ребёнка своей формулой (float + round half up вместо целочисленного деления) */
+function brute_child($type, $value, $room, $g, $nights) {
+    switch($type) {
+        case 2: return $value * $nights;
+        case 3: return (int)round($room * $value / 10000);
+        case 4: return (int)round($room * $value / 10000 / $g);
+        case 5: return (int)round($room / $g);
+        default: return 0;
+    }
+}
+
+/** полный перебор: какие дети занимают свободные места цены номера (все подмножества нужного размера) */
 function brute_price(array $rr, $adults, array $ages) {
     $a = $adults;
-    $placed = array();
-    $sum = 0;
+    $kids = array();                          // array(группа, младенец, занимает место)
     foreach($ages as $age) {
         if($age < $rr['children_min_age']) {
             return null;
@@ -30,40 +40,64 @@ function brute_price(array $rr, $adults, array $ages) {
             $a++;
             continue;
         }
-        $bed = $rr['bed'][$j] >= Search_Occupancy::NOT_ALLOWED ? null : $rr['bed'][$j];
-        $extra = $rr['extra'][$j] >= Search_Occupancy::NOT_ALLOWED ? null : $rr['extra'][$j];
-        if($rr['infants_excluded'] && $age <= Search_Occupancy::INFANT_AGE_MAX) {
-            if(is_null($bed) && is_null($extra)) {
-                return null;
-            }
-            $sum += is_null($bed) ? $extra : (is_null($extra) ? $bed : min($bed, $extra));
-            continue;
-        }
-        $placed[] = array($bed, $extra);
+        $inf = $age <= 2;
+        $kids[] = array($j, $inf, !($inf && $rr['infants_excluded']));
     }
-    if($a < 1 || $a > 8 || !(($rr['gmask'] >> $a) & 1) || count($placed) > $rr['max_children'] || $a + count($placed) > $rr['max_occupancy']) {
+    $placed = 0;
+    $infants = 0;
+    foreach($kids as $kid) {
+        $placed += $kid[2] ? 1 : 0;
+        $infants += $kid[1] ? 1 : 0;
+    }
+    if($a < 1 || $a > 8 || $placed > $rr['max_children'] || $a + $placed > $rr['max_occupancy']
+        || (255 != $rr['max_infants'] && $infants > $rr['max_infants'])) {
         return null;
     }
-    $bedSlots = max(0, $rr['places_regular'] - $a) + $rr['share_slots'];
-    $extraSlots = $rr['extra_beds'] - max(0, $a - $rr['places_regular']);
-    $best = null;
-    for($mask = 0; $mask < (1 << count($placed)); $mask++) {
-        $s = 0;
-        $beds = 0;
-        foreach($placed as $bit => $p) {
-            $onBed = ($mask >> $bit) & 1;
-            $c = $p[$onBed ? 0 : 1];
-            if(is_null($c)) {
-                continue 2;
-            }
-            $s += $c;
-            $beds += $onBed;
-        }
-        if($beds <= $bedSlots && count($placed) - $beds <= $extraSlots && (is_null($best) || $s < $best)) {
-            $best = $s;
+    $g = null;
+    for($x = $a; $x <= min(8, $a + $placed); $x++) {
+        if(($rr['gmask'] >> $x) & 1) {
+            $g = $x;
+            break;
         }
     }
-    return is_null($best) ? null : $rr['adults'][$a] + $sum + $best;
+    if(is_null($g)) {
+        return null;
+    }
+    $prices = array();
+    foreach($kids as $kid) {
+        $prices[] = brute_child($rr['child_type'][$kid[0]], $rr['child_value'][$kid[0]], $rr['adults'][$g], $g, $rr['nights']);
+    }
+    // все подмножества детей с местом размера g - a: бесплатно; берётся минимальный итог
+    $best = null;
+    for($mask = 0; $mask < (1 << count($kids)); $mask++) {
+        $size = 0;
+        $ok = true;
+        foreach($kids as $bit => $kid) {
+            if(($mask >> $bit) & 1) {
+                $size++;
+                $ok = $ok && $kid[2];
+            }
+        }
+        if(!$ok || $size != $g - $a) {
+            continue;
+        }
+        $total = $rr['adults'][$g];
+        $paying = 0;
+        foreach($kids as $bit => $kid) {
+            if(!(($mask >> $bit) & 1)) {
+                $total += $prices[$bit];
+                $paying += $prices[$bit] > 0 ? 1 : 0;
+            }
+        }
+        if(is_null($best) || $total < $best[0]) {
+            $best = array($total, $paying);
+        }
+    }
+    list($total, $paying) = $best;
+    if($paying > 0 && $g + $paying <= 8 && (($rr['gmask'] >> ($g + $paying)) & 1)) {
+        $total = min($total, $rr['adults'][$g + $paying]);
+    }
+    return $total;
 }
 
 function random_rr() {
@@ -77,30 +111,31 @@ function random_rr() {
         }
         $age = $to + 1 + (mt_rand(0, 4) ? 0 : 1);     // иногда пропуск возраста -> взрослый
     }
-    $price = function() {
-        $r = mt_rand(0, 9);
-        return $r < 2 ? Search_Occupancy::NOT_ALLOWED * mt_rand(1, 3) : ($r < 4 ? 0 : mt_rand(1, 50) * 1000);
-    };
-    $rr = array('gmask' => 0, 'places_regular' => mt_rand(1, 4), 'extra_beds' => mt_rand(0, 2), 'share_slots' => mt_rand(0, 2),
-        'max_children' => mt_rand(0, 4), 'max_occupancy' => mt_rand(2, 7), 'infants_excluded' => mt_rand(0, 1),
+    $rr = array('gmask' => 0, 'max_children' => mt_rand(0, 4), 'max_occupancy' => mt_rand(2, 7),
+        'max_infants' => mt_rand(0, 3) ? 255 : mt_rand(0, 2), 'infants_excluded' => mt_rand(0, 1),
         'children_min_age' => mt_rand(0, 9) ? (mt_rand(0, 3) ? 0 : 3) : 255, 'age_group' => $ageGroup,
-        'adults' => array(), 'bed' => array(), 'extra' => array());
+        'adults' => array(), 'child_type' => array(), 'child_value' => array(), 'nights' => mt_rand(1, 14));
+    $flat = mt_rand(0, 2) == 0;                       // одна цена за номер для любого числа гостей
+    $base = mt_rand(50, 300) * 1000 * $rr['nights'];
     for($g = 1; $g <= 8; $g++) {
-        if($g <= $rr['places_regular'] + $rr['extra_beds'] && mt_rand(0, 5)) {
+        if($g <= min($rr['max_occupancy'], mt_rand(1, 8)) && mt_rand(0, 4)) {
             $rr['gmask'] |= 1 << $g;
         }
-        $rr['adults'][$g] = $g * mt_rand(50, 100) * 1000;
+        // цены в кэше не бывают меньше 0 (UInt64, сборщик ограничивает нулём)
+        $rr['adults'][$g] = $flat ? $base : max(0, $base + ($g - 2) * mt_rand(-20, 60) * 1000 * $rr['nights']);
     }
     for($j = 1; $j <= $groups; $j++) {
-        $rr['bed'][$j] = $price();
-        $rr['extra'][$j] = $price();
+        $rr['child_type'][$j] = mt_rand(1, 5);
+        $rr['child_value'][$j] = 2 == $rr['child_type'][$j] ? mt_rand(0, 50) * 1000 : mt_rand(0, 100) * 100;
     }
     return $rr;
 }
 
-// ---------- price(): жадный алгоритм == полный перебор
+// ---------- price(): «самые дорогие дети на свободные места» == полный перебор
 $fail = 0;
 $feasible = 0;
+$covered = 0;
+$capped = 0;
 for($n = 0; $n < $cases; $n++) {
     $rr = random_rr();
     $ages = array();
@@ -111,6 +146,8 @@ for($n = 0; $n < $cases; $n++) {
     $expected = brute_price($rr, $adults, $ages);
     $got = Search_Occupancy::price($rr, $adults, $ages);
     $feasible += is_null($expected) ? 0 : 1;
+    $covered += ($got && $got['guests'] > $got['adults'] && !$got['capped']) ? 1 : 0;
+    $capped += ($got && $got['capped']) ? 1 : 0;
     if((is_null($got) ? null : $got['total']) !== $expected) {
         $fail++;
         if($fail <= 5) {
@@ -119,8 +156,28 @@ for($n = 0; $n < $cases; $n++) {
         }
     }
 }
-printf("price(): %d random rooms, %d feasible, mismatches with brute force: %d\n", $cases, $feasible, $fail);
+printf("price(): %d random rooms, %d feasible (%d priced for more guests than adults, %d children counted as adults), mismatches with brute force: %d\n",
+    $cases, $feasible, $covered, $capped, $fail);
 $failures = $fail;
+
+// ---------- примеры из обсуждения (README): 1 взрослый + 7 и 9 лет по 50% взрослого, «1 гость» выключен, 2 гостя 100, 3 гостя 115
+$rr = array('gmask' => (1 << 2) | (1 << 3), 'max_children' => 2, 'max_occupancy' => 3, 'max_infants' => 255, 'infants_excluded' => 0,
+    'children_min_age' => 0, 'age_group' => array_merge(array_fill(0, 3, 1), array_fill(3, 15, 2)),
+    'child_type' => array(1 => 1, 2 => 4), 'child_value' => array(1 => 0, 2 => 5000), 'adults' => array(2 => 10000, 3 => 11500), 'nights' => 1);
+$p = Search_Occupancy::price($rr, 1, array(7, 9));
+$examples = array(array('1 adult + 7, 9 y.o., 1 guest off: 100 + 25 -> capped to 115', 11500, $p['total']));
+$rr['gmask'] = (1 << 1) | (1 << 2) | (1 << 3);
+$rr['adults'] = array(1 => 14000, 2 => 14000, 3 => 14000);  // per room 1400: одна цена для любого числа гостей
+$rr['child_value'][2] = 5000;
+$p = Search_Occupancy::price($rr, 2, array(12));
+$examples[] = array('per room 1400, 2 adults + 12 y.o. (50% of adult): as 3 adults = 1400', 14000, $p['total']);
+$rr['gmask'] = (1 << 1) | (1 << 2);
+$p = Search_Occupancy::price($rr, 2, array(12));
+$examples[] = array('... max 2 adults: 1400 + 1400 / 2 x 50% = 1750', 17500, $p['total']);
+foreach($examples as $e) {
+    printf("example: %-72s expected %6d got %6d %s\n", $e[0], $e[1], $e[2], $e[1] == $e[2] ? 'OK' : 'FAIL');
+    $failures += $e[1] == $e[2] ? 0 : 1;
+}
 
 // ---------- cheapestCombination(): отсечение == полный перебор
 $fail = 0;

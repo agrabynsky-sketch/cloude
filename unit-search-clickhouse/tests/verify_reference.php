@@ -25,13 +25,14 @@ if(isset($argv[3]) && preg_match('/^(\d+)-(\d+)$/', $argv[3], $m)) {
     }));
 }
 
-/** случайный состав номера: 1-3 взрослых, 0-3 детей 0-17 лет (дети чаще, чем в жизни) */
+/** случайный состав номера: чаще 2 взрослых, 0-2 ребёнка 0-17 лет (иногда 1 или 3 взрослых, 3 ребёнка) */
 function random_room() {
     $ages = array();
-    for($i = mt_rand(0, 3); $i > 0; $i--) {
+    for($i = mt_rand(0, 9) ? mt_rand(0, 2) : 3; $i > 0; $i--) {
         $ages[] = mt_rand(0, 17);
     }
-    return array('adults' => mt_rand(1, 3), 'children' => $ages);
+    $adults = mt_rand(0, 9);
+    return array('adults' => $adults < 6 ? 2 : ($adults < 9 ? 1 : 3), 'children' => $ages);
 }
 function random_checkin($today, $maxOffset) {
     return date('Y-m-d', strtotime("$today 12:00:00 +" . mt_rand(0, $maxOffset) . ' day'));
@@ -86,6 +87,8 @@ $fail = 0;
 $checked = 0;
 $empty = 0;
 $withKids = 0;
+$moreGuests = 0;
+$asAdults = 0;
 for($n = 0; $n < $cases; $n++) {
     $hotelId = $hotelIds[mt_rand(0, count($hotelIds) - 1)];
     $nights = mt_rand(1, 10);
@@ -99,7 +102,9 @@ for($n = 0; $n < $cases; $n++) {
     $got = array();
     foreach($offer['rooms'][0]['items'] as $row) {
         $got[$row['id_rate_room']] = array('total' => $row['price_minor'], 'nightly' => to_minor_list($row['nightly']));
-        $withKids += !empty($row['children']) && $row['price_children'] > 0 ? 1 : 0;
+        $withKids += !empty($row['children']) && ($row['price_children'] > 0 || $row['capped']) ? 1 : 0;
+        $moreGuests += $row['guests'] > $row['adults'] && !$row['capped'] ? 1 : 0;      // ребёнок на свободном месте цены
+        $asAdults += $row['capped'] ? 1 : 0;                                             // дети посчитаны как взрослые
     }
     ksort($got);
     $checked += count($expected);
@@ -110,8 +115,8 @@ for($n = 0; $n < $cases; $n++) {
             json_encode($room), json_encode($expected), json_encode($got));
     }
 }
-printf("2. hotelRooms(), one room with children: %d cases, %d room-rate prices compared (%d with paid children), %d empty, mismatches: %d\n",
-    $cases, $checked, $withKids, $empty, $fail);
+printf("2. hotelRooms(), one room with children: %d cases, %d room-rate prices compared (%d with paid children: %d priced for more guests"
+    . " than adults, %d children counted as adults), %d empty, mismatches: %d\n", $cases, $checked, $withKids, $moreGuests, $asAdults, $empty, $fail);
 $failures[] = $fail;
 
 // ---------- 3. search(): один номер с детьми, минимум по отелю

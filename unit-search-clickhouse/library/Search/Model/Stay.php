@@ -3,9 +3,10 @@
 /**
  * Поиск по кэшу unit_search.hotels_search_stay.
  *
- * Состав гостей — по номерам: взрослые + возраста детей. Тариф номера — только за взрослых, дети — по детской
- * политике (существующая кровать / доп. кровать), взрослые сверх base_occupancy в per room — с доплатой.
- * Правила — README, раздел «Дети, доп. кровати и несколько номеров».
+ * Состав гостей — по номерам: взрослые + возраста детей. Цена номера — за число взрослых гостей (окно цен по числу гостей,
+ * нет настроек — одна цена за номер), дети — по детской политике отеля от цены номера, не дороже, чем взрослые.
+ * Вместимость — только существующие места; доп. кровати и детские кроватки в расчёте не участвуют (условия проживания).
+ * Правила — README, раздел «Вместимость, дети и несколько номеров».
  *
  * 1) Минимальная цена по отелям (выдача 500-1000 отелей):
  *
@@ -46,7 +47,6 @@ class Search_Model_Stay extends Search_Model_Abstract {
     protected $_table = 'hotels_search_stay';
 
     const MAX_NIGHTS = 365;
-    const NOT_ALLOWED = 1099511627776;   // Search_Occupancy::NOT_ALLOWED
 
     protected $_queryCacheTtl = 0;
 
@@ -192,7 +192,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
         $n = $c['nights'];
         // явный список дат вместо BETWEEN: для каждой даты ClickHouse отсекает гранулы по id_hotel (ORDER BY d, id_hotel)
         $where = $this->_where($c, 's.d IN (' . $this->_dateList(trim($c['in'], "'"), trim($c['out'], "'")) . ')') . "\n AND " . $this->_roomsPrefilter($c);
-        // цены за g взрослых нужны для g от min(adults) до max(adults + дети)
+        // цены номера за g гостей нужны для g от min(adults) до max(adults + дети)
         $gMin = Search_Occupancy::MAX_ADULTS;
         $gMax = 1;
         foreach($c['rooms'] as $room) {
@@ -203,27 +203,19 @@ class Search_Model_Stay extends Search_Model_Abstract {
         for($g = $gMin; $g <= $gMax; $g++) {
             $cum[] = "c$g";
         }
-        $hasKids = false;
-        foreach($c['rooms'] as $room) {
-            $hasKids = $hasKids || !empty($room['children']);
-        }
-        // детские массивы читаются, только если в запросе есть дети
-        $kidsCols = $hasKids
-            ? "arrayStringConcat(groupArrayIf(age_group, d = {$c['in']})[1], ',') AS age_group,
-                       arrayStringConcat(arrayMap((x, y) -> x - y, groupArrayIf(cb, d = {$c['out']})[1], groupArrayIf(cb, d = {$c['in']})[1]), ',') AS bed,
-                       arrayStringConcat(arrayMap((x, y) -> x - y, groupArrayIf(ce, d = {$c['out']})[1], groupArrayIf(ce, d = {$c['in']})[1]), ',') AS extra"
-            : "'' AS age_group, '' AS bed, '' AS extra";
         $sql = "SELECT id_rate_room, any(id_room) AS id_room, any(id_rate) AS id_rate, any(id_parent) AS id_parent,
                        any(id_board_type) AS id_board_type, any(id_cancel_policy) AS id_cancel_policy,
-                       any(refundable) AS refundable, any(id_room_type) AS id_room_type,
+                       any(refundable) AS refundable, any(id_room_type) AS id_room_type, any(base_occupancy) AS base_occupancy,
                        any(max_guests) AS max_guests, any(id_currency) AS id_currency, any(gmask) AS gmask,
-                       any(places_regular) AS places_regular, any(extra_beds) AS extra_beds, any(share_slots) AS share_slots,
-                       any(max_children) AS max_children, any(max_occupancy) AS max_occupancy, any(infants_excluded) AS infants_excluded,
-                       any(children_min_age) AS children_min_age,
+                       any(max_children) AS max_children, any(max_occupancy) AS max_occupancy, any(max_infants) AS max_infants,
+                       any(infants_excluded) AS infants_excluded, any(children_min_age) AS children_min_age,
+                       any(extra_beds) AS extra_beds, any(cots) AS cots, any(cots_and_extra_beds) AS cots_and_extra_beds,
+                       arrayStringConcat(any(age_group), ',') AS age_group,
+                       arrayStringConcat(any(child_type), ',') AS child_type,
+                       arrayStringConcat(any(child_value), ',') AS child_value,
                        minIf(avail, d < {$c['out']}) AS rooms_left,
                        arrayStringConcat(arrayMap(x -> arrayStringConcat(x.2, ':'),
-                           arraySort(x -> x.1, groupArray((d, [" . implode(', ', $cum) . "])))), ',') AS cum,
-                       $kidsCols
+                           arraySort(x -> x.1, groupArray((d, [" . implode(', ', $cum) . "])))), ',') AS cum
                 FROM {$this->_table} AS s FINAL
                 WHERE $where
                 GROUP BY id_rate_room
@@ -232,12 +224,15 @@ class Search_Model_Stay extends Search_Model_Abstract {
         foreach($this->_client->fetchAll($sql) as $row) {
             $rr = array();
             foreach(array('id_rate_room', 'id_room', 'id_rate', 'id_parent', 'id_board_type', 'id_cancel_policy', 'refundable', 'id_room_type',
-                        'max_guests', 'id_currency', 'rooms_left', 'gmask', 'places_regular', 'extra_beds', 'share_slots', 'max_children',
-                        'max_occupancy', 'infants_excluded', 'children_min_age') as $f) {
+                        'base_occupancy', 'max_guests', 'id_currency', 'rooms_left', 'gmask', 'max_children', 'max_occupancy', 'max_infants',
+                        'infants_excluded', 'children_min_age', 'extra_beds', 'cots', 'cots_and_extra_beds') as $f) {
                 $rr[$f] = (int)$row[$f];
             }
+            $rr['nights'] = $n;
             $rr['age_group'] = '' === $row['age_group'] ? array() : array_map('intval', explode(',', $row['age_group']));
-            // нарастающие суммы по датам проживания -> цена за g взрослых за проживание и по ночам
+            $rr['child_type'] = $this->_groupList($row['child_type']);
+            $rr['child_value'] = $this->_groupList($row['child_value']);
+            // нарастающие суммы по датам проживания -> цена номера за g гостей за проживание и по ночам
             $cum = array();
             foreach(explode(',', $row['cum']) as $day) {
                 $cum[] = array_map('intval', explode(':', $day));
@@ -250,8 +245,6 @@ class Search_Model_Stay extends Search_Model_Abstract {
                     $rr['nightly_adults'][$g][] = $cum[$i + 1][$g - $gMin] - $cum[$i][$g - $gMin];
                 }
             }
-            $rr['bed'] = $this->_groupList($row['bed']);
-            $rr['extra'] = $this->_groupList($row['extra']);
             $rateRooms[] = $rr;
         }
         $result = array('rooms' => array(), 'best' => null);
@@ -265,24 +258,29 @@ class Search_Model_Stay extends Search_Model_Abstract {
                 }
                 $item = array();
                 foreach(array('id_rate_room', 'id_room', 'id_rate', 'id_parent', 'id_board_type', 'id_cancel_policy', 'refundable', 'id_room_type',
-                            'max_guests', 'id_currency', 'rooms_left') as $f) {
+                            'base_occupancy', 'max_guests', 'id_currency', 'rooms_left') as $f) {
                     $item[$f] = $rr[$f];
                 }
                 $item['price_minor'] = $p['total'];
                 $item['price'] = $p['total'] / 100;
-                $item['price_adults'] = $p['price_adults'] / 100;
+                $item['price_adults'] = $p['price_adults'] / 100;         // цена номера за guests гостей
                 $item['price_children'] = $p['price_children'] / 100;
                 $item['adults'] = $p['adults'];                           // с детьми, которые по возрасту считаются взрослыми
-                $item['extra_beds_adults'] = $p['extra_beds_adults'];     // взрослых на доп. кроватях
+                $item['guests'] = $p['guests'];                           // за сколько гостей взята цена номера
+                $item['capped'] = $p['capped'];                           // дети посчитаны как взрослые (так дешевле)
                 $item['children'] = array();
                 foreach($p['children'] as $child) {
                     $child['price'] = $child['price'] / 100;
                     $item['children'][] = $child;
                 }
-                $item['nightly'] = array();                               // цена взрослых по ночам
-                foreach($rr['nightly_adults'][$p['adults']] as $v) {
+                $item['nightly'] = array();                               // цена номера по ночам
+                foreach($rr['nightly_adults'][$p['guests']] as $v) {
                     $item['nightly'][] = $v / 100;
                 }
+                // условия проживания: доп. кровати и детские кроватки (в цене и вместимости не участвуют)
+                $item['extra_beds'] = $rr['extra_beds'];
+                $item['cots'] = $rr['cots'];
+                $item['cots_and_extra_beds'] = $rr['cots_and_extra_beds'];
                 $items[] = $item;
             }
             usort($items, function($x, $y) {
@@ -323,8 +321,8 @@ class Search_Model_Stay extends Search_Model_Abstract {
      * Запрос намеренно плоский и одинаковый по размеру при любом числе детей: ClickHouse тратит заметное время на анализ
      * каждого вложенного уровня и каждого выражения, поэтому дети запроса — это строки (ARRAY JOIN списка детей),
      * а не выражения SQL. Уровни: 1) группировка двух строк рум-рейта (заезд, выезд) — разности нарастающих сумм;
-     * 2) ARRAY JOIN детей и группировка по (рум-рейт, номер запроса) — размещение детей и итоговая цена.
-     * Логика размещения та же, что в Search_Occupancy::price().
+     * 2) ARRAY JOIN детей и группировка по (рум-рейт, номер запроса) — состав, цена детей и итоговая цена.
+     * Логика та же, что в Search_Occupancy::price().
      */
     protected function _roomPricesSql(array $c, $where) {
         $in = $c['in'];
@@ -344,7 +342,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
                 $kids[] = '(' . ($i + 1) . ', 255)';                   // номер без детей: строка-заглушка
             }
         }
-        // цена за g взрослых нужна для g от min(adults) до max(adults + дети)
+        // цена номера за g гостей нужна для g от min(adults) до max(adults + дети)
         $gMin = min($adults);
         $gMax = $gMin;
         foreach($c['rooms'] as $room) {
@@ -367,11 +365,9 @@ class Search_Model_Stay extends Search_Model_Abstract {
             $cols[] = 'any(s.gmask) AS gm';
         }
         if($hasKids) {
-            $cols[] = 'any(s.places_regular) AS pr, any(s.extra_beds) AS eb, any(s.share_slots) AS ss, any(s.max_children) AS mch,
-                       any(s.max_occupancy) AS mocc, any(s.infants_excluded) AS infx, any(s.children_min_age) AS mage,
-                       groupArrayIf(s.age_group, s.d = ' . $in . ')[1] AS ag,
-                       arrayMap((x, y) -> toInt64(x) - toInt64(y), groupArrayIf(s.cb, s.d = ' . $out . ')[1], groupArrayIf(s.cb, s.d = ' . $in . ')[1]) AS db,
-                       arrayMap((x, y) -> toInt64(x) - toInt64(y), groupArrayIf(s.ce, s.d = ' . $out . ')[1], groupArrayIf(s.ce, s.d = ' . $in . ')[1]) AS de';
+            $cols[] = 'any(s.max_children) AS mch, any(s.max_occupancy) AS mocc, any(s.max_infants) AS minf,
+                       any(s.infants_excluded) AS infx, any(s.children_min_age) AS mage,
+                       any(s.age_group) AS ag, any(s.child_type) AS ct, any(s.child_value) AS cv';
         }
         $rateRooms = "SELECT s.id_hotel AS id_hotel, s.id_rate_room AS id_rate_room,
                        any(s.id_room) AS id_room, any(s.id_rate) AS id_rate, any(s.id_board_type) AS id_board_type,
@@ -390,11 +386,11 @@ class Search_Model_Stay extends Search_Model_Abstract {
         }
         $adultsList = '[' . implode(', ', $adults) . ']';
         if(!$hasKids && 1 == $k) {
-            // один номер без детей: как до поддержки детей (gmask проверен в WHERE)
+            // один номер без детей: цена номера за adults гостей (gmask проверен в WHERE)
             return "SELECT $keep, 1 AS i, a$gMin AS total FROM ($rateRooms)";
         }
         if(!$hasKids) {
-            // только взрослые: цена за adults_i взрослых
+            // только взрослые: цена номера за adults_i гостей
             return "SELECT $keep, i, arrayElement([" . implode(', ', $prices) . "], {$adultsList}[i] - $gMin + 1) AS total
                     FROM ($rateRooms)
                     ARRAY JOIN range(1, " . ($k + 1) . ") AS i
@@ -404,44 +400,61 @@ class Search_Model_Stay extends Search_Model_Abstract {
         foreach($c['rooms'] as $room) {
             $minAges[] = empty($room['children']) ? 255 : min($room['children']);
         }
-        $big = self::NOT_ALLOWED;
         $infant = Search_Occupancy::INFANT_AGE_MAX;
-        // дети как строки: kid = (номер запроса, возраст); grp — группа (0 = взрослый), b / e — цена за проживание на существующей /
-        // доп. кровати (>= 2^40 = нельзя, то есть бесконечная цена); инфант при is_without_infants места не занимает.
-        // Размещение: все на доп. кроватях, затем m детей с наибольшей выгодой (доп. − существующая) — на существующие кровати,
-        // m = clamp(сколько выгодно, lo = np − el, hi = min(np, bl)); это точный минимум, номер не подходит, если детская часть >= 2^40.
-        return "WITH kid.2 AS age, ag[age + 1] AS grp, db[grp] AS b, de[grp] AS e,
-                     (age <= $infant AND infx = 1 AND grp > 0) AS infant, (grp > 0 AND NOT infant AND age < 255) AS pl
+        $maxGuests = Search_Occupancy::MAX_ADULTS;
+        $priceList = '[any(' . implode('), any(', $prices) . ')]';
+        $pr = "pa_[gd - $gMin + 1]";                                    // цена номера за gd гостей за проживание
+        // Дети как строки: kid = (номер запроса, возраст); grp — группа (0 = взрослый); младенец (не `inf` — это литерал
+        // бесконечности в ClickHouse) при is_without_infants места не занимает.
+        // g — за сколько гостей цена номера: взрослые a2x или ближайшее большее продаваемое (места займут дети).
+        // Итог считается вложенными лямбдами: значения передаются параметрами ([x])[1] — «let». Цепочки алиасов
+        // (total -> t0 -> cov -> kp -> g) ClickHouse при разборе раскрывает многократно: такой запрос разбирался 0,5 с.
+        //   kp — цены детей от цены номера за gd гостей; cov — самые дорогие дети с местом на свободных местах цены (бесплатно);
+        //   итог — не дороже, чем цена номера за gd + платящих детей (если на столько продаётся).
+        return "WITH kid.2 AS age, ag[age + 1] AS grp, (age < 255 AND grp > 0) AS ch,
+                     (ch AND age <= $infant) AS infant, (ch AND NOT (infant AND infx = 1)) AS pl
                 SELECT id_hotel, id_rate_room, kid.1 AS i,
                        any(id_room) AS id_room, any(id_rate) AS id_rate, any(id_board_type) AS id_board_type,
                        any(id_cancel_policy) AS id_cancel_policy, any(refundable) AS refundable,
-                       any(id_currency) AS id_currency, any(stars) AS stars, any(cap) AS cap,
+                       any(id_currency) AS id_currency, any(stars) AS stars, any(cap) AS cap, any(gm) AS gmk,
                        toInt64({$adultsList}[i]) + toInt64(countIf(grp = 0 AND age < 255)) AS a2x,
                        toInt64(countIf(pl)) AS np,
-                       greatest(toInt64(any(pr)) - a2x, 0) + toInt64(any(ss)) AS bl,
-                       toInt64(any(eb)) - greatest(a2x - toInt64(any(pr)), 0) AS el,
-                       sumIf(e, pl) + sumIf(least(b, e), infant)
-                           - arraySum(arraySlice(arrayReverseSort(groupArrayIf(e - b, pl)), 1,
-                               greatest(least(greatest(toInt64(countIf(pl AND e > b)), np - el), np, bl), 0))) AS ch,
-                       arrayElement([any(" . implode('), any(', $prices) . ")], a2x - $gMin + 1) + ch AS total
+                       if(bitTest(gmk, least(a2x, 15)), a2x,
+                          toInt64(arrayFirst(x -> bitTest(gmk, x), range(toUInt8(least(a2x + 1, 15)), toUInt8(least(a2x + np + 1, $maxGuests + 1)))))) AS g,
+                       $priceList AS pa,
+                       groupArrayIf((ct[grp], cv[grp], pl), ch) AS kv,
+                       arrayMap((gd, a2, gm_, pa_, kv_) -> arrayMap(kp -> arrayMap(cov ->
+                           arrayMap((paying, t0) -> if(paying > 0 AND gd + paying <= $maxGuests AND bitTest(gm_, gd + paying),
+                                   least(t0, pa_[gd + paying - $gMin + 1]), t0),
+                               [toInt64(arrayCount(p -> p > 0, kp)) - toInt64(arrayCount(p -> p > 0, cov))], [$pr + arraySum(kp) - arraySum(cov)])[1],
+                           [arraySlice(arrayReverseSort(arrayFilter((p, x) -> x.3, kp, kv_)), 1, gd - a2)])[1],
+                         [arrayMap(x -> multiIf(x.1 = 2, toInt64(x.2) * $n, x.1 = 3, intDiv($pr * x.2 + 5000, 10000),
+                             x.1 = 4, intDiv($pr * x.2 + 5000 * gd, 10000 * gd), x.1 = 5, intDiv($pr + intDiv(gd, 2), gd), toInt64(0)), kv_)])[1],
+                       [greatest(g, 1)], [a2x], [gmk], [pa], [kv])[1] AS total
                 FROM ($rateRooms)
                 ARRAY JOIN [" . implode(', ', $kids) . "] AS kid
                 GROUP BY id_hotel, id_rate_room, i
-                HAVING a2x <= " . Search_Occupancy::MAX_ADULTS . " AND bitTest(any(gm), least(a2x, 15)) AND any(mage) <= [" . implode(', ', $minAges) . "][i]
-                   AND np <= any(mch) AND a2x + np <= any(mocc) AND el >= 0 AND greatest(0, np - el) <= least(np, bl) AND ch < $big";
+                HAVING a2x <= $maxGuests AND g > 0 AND any(mage) <= [" . implode(', ', $minAges) . "][i]
+                   AND np <= any(mch) AND a2x + np <= any(mocc) AND countIf(infant) <= any(minf)";
     }
 
     /**
-     * Грубый фильтр строк до группировки: рум-рейт подходит хотя бы одному номеру запроса по числу взрослых
-     * (с детьми вне групп) и минимальному возрасту детей. Точные проверки — после группировки.
+     * Грубый фильтр строк до группировки: рум-рейт подходит хотя бы одному номеру запроса — продаётся на a гостей
+     * (a = взрослые + дети вне групп) или, если в номере есть дети, на большее число гостей до взрослых + детей
+     * (места займут дети); и минимальный возраст детей. Точные проверки — после группировки.
      */
     protected function _roomsPrefilter(array $c) {
         $or = array();
         foreach($c['rooms'] as $room) {
-            $cond = empty($room['children'])
-                ? 'bitTest(s.gmask, ' . $room['adults'] . ')'
-                : 'bitTest(s.gmask, least(15, ' . $room['adults'] . ' + (s.age_group[' . implode(' + 1] = 0) + (s.age_group[', $room['children']) . ' + 1] = 0)))'
-                  . ' AND s.children_min_age <= ' . min($room['children']);
+            if(empty($room['children'])) {
+                $cond = 'bitTest(s.gmask, ' . $room['adults'] . ')';
+            } else {
+                // есть бит в [a; adults + дети]: биты gmask до верхней границы, их сумма >= 2^a
+                $upper = min(Search_Occupancy::MAX_ADULTS, $room['adults'] + count($room['children']));
+                $cond = 'bitAnd(s.gmask, ' . ((1 << ($upper + 1)) - 1) . ') >= bitShiftLeft(toUInt64(1), ' . $room['adults']
+                    . ' + (s.age_group[' . implode(' + 1] = 0) + (s.age_group[', $room['children']) . ' + 1] = 0))'
+                    . ' AND s.children_min_age <= ' . min($room['children']);
+            }
             $or[] = '(' . $cond . ')';
         }
         return '(' . implode(' OR ', array_unique($or)) . ')';

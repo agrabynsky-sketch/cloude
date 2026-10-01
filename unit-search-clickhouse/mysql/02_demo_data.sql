@@ -12,18 +12,20 @@
 --   hotels_rates_prices         цены и ограничения на каждую ночь для непроизводных тарифов
 --                               (+ ~3% собственных строк у производного тарифа: своя цена / закрытие / свой %)
 --   hotels_rooms_availability   наличие на ~80% ночей (остальные ночи = allotment номера)
---   hotels_rates_occupancy      надбавки за 1/3/4 гостей для номеров с pricing_model = 2
---   hotels_rates_occupancy_daily цены за 1 и 3 гостей на ~8% ночей для номеров с pricing_model = 2
+--   hotels_rates_occupancy      цены по числу гостей у Triple / Family / Junior Suite в чётных отелях (у остальных номеров
+--                               одна цена за номер): 1 гость -10%, 3 гостя +15% (у ~30% — суммой), 4 гостя +30%;
+--                               у ~20% рум-рейтов «1 гость» выключен, у ~10% — «3 гостя»; у Triple на тарифе BB в каждом
+--                               пятом таком отеле базовое размещение рум-рейта 3 (hotels_rates_rooms.base_occupancy)
+--                               и строки «1 гость -20%», «2 гостя -10%»; производный Non-refundable наследует цены по гостям
+--                               родителя, у ~20% его рум-рейтов своя строка «3 гостя» суммой
+--   hotels_rates_occupancy_daily цены за 1 и 3 гостей на ~8% ночей у тех же рум-рейтов
 --                               (~2% строк с price = 0 — "не задано", и строки для выключенного числа гостей)
---   дети и доп. кровати (нужен mysql/01b_children_extra_beds.sql):
---     hotels.extra_bed_adult_price  ~70% отелей платно, ~10% бесплатно, ~20% NULL (доп. взрослые в per room не принимаются);
---                                   ~2.5% отелей не принимают детей, ~8% — с 3 лет
---     hotels_rooms                  places_regular / extra_beds / share_slots / max_adults / max_children / max_occupancy /
---                                   is_without_infants по типу номера; у ~10% номеров places_regular = NULL (значение по умолчанию)
---     hotels_children_groups        4 варианта детской политики отеля (у ~10% отелей групп нет — дети считаются взрослыми),
---                                   у ~25% отелей свои группы у тарифа Half Board, немного неактивных групп
---     hotels_children_prices        «дети бесплатно» летом на BAR, надбавка на Новый год для всех тарифов,
---                                   постоянная цена групп 6+ у Non-refundable
+--   вместимость и дети (нужен mysql/01b_occupancy_children.sql):
+--     hotels                        ~2.5% отелей не принимают детей, ~8% — с 3 лет
+--     hotels_rooms                  max_adults / max_children / max_occupancy (только существующие места) / max_infants /
+--                                   is_without_infants / extra_beds / cots / cots_and_extra_beds по типу номера
+--     hotels_children_groups        4 варианта детской политики отеля со всеми 5 типами цены (у ~10% отелей групп нет —
+--                                   дети считаются взрослыми), немного неактивных групп
 --
 -- Безопасность для рабочей базы:
 --   * id берутся от MAX(id) + 1000 каждой таблицы (без больших скачков AUTO_INCREMENT);
@@ -34,7 +36,7 @@
 --
 -- Запуск:  mysql -u... -p... <db> < 02_demo_data.sql
 --          (или в Navicat: выполнить файл целиком, DELIMITER поддерживается)
--- Время:   ~2 минуты на 2000 отелей (≈7.2 млн строк цен, ≈2.3 млн строк наличия, 5.7 тыс. детских групп)
+-- Время:   ~2 минуты на 2000 отелей (≈7.2 млн строк цен, ≈2.3 млн строк наличия, 4.7 тыс. детских групп)
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS hotels_search_demo_registry (
@@ -52,9 +54,7 @@ DELIMITER $$
 
 CREATE PROCEDURE hotels_search_demo_generate(IN p_hotels INT, IN p_days INT)
 BEGIN
-  DECLARE v_hb, v_rb, v_tb, v_rrb, v_gb, v_pb BIGINT;
-  DECLARE v_summer DATE;
-  DECLARE v_newyear DATE;
+  DECLARE v_hb, v_rb, v_tb, v_rrb, v_gb BIGINT;
   DECLARE v_from INT DEFAULT 1;
   DECLARE v_chunk INT DEFAULT 50;
   DECLARE v_start DATE DEFAULT CURDATE();
@@ -80,11 +80,6 @@ BEGIN
   SELECT IFNULL(MAX(id), 0) + 1000 INTO v_tb  FROM hotels_rates;
   SELECT IFNULL(MAX(id), 0) + 1000 INTO v_rrb FROM hotels_rates_rooms;
   SELECT IFNULL(MAX(id), 0) + 1000 INTO v_gb  FROM hotels_children_groups;
-  SELECT IFNULL(MAX(id), 0) + 1000 INTO v_pb  FROM hotels_children_prices;
-  -- ближайшее 1 июля (летняя акция) и 24 декабря (Новый год) от даты старта
-  SET v_summer = MAKEDATE(YEAR(v_start) + IF(v_start > MAKEDATE(YEAR(v_start), 1) + INTERVAL 6 MONTH, 1, 0), 1) + INTERVAL 6 MONTH;
-  SET v_newyear = MAKEDATE(YEAR(v_start) + IF(v_start > MAKEDATE(YEAR(v_start), 1) + INTERVAL 11 MONTH + INTERVAL 23 DAY, 1, 0), 1)
-                  + INTERVAL 11 MONTH + INTERVAL 23 DAY;
 
   -- registry first: a second run fails on PRIMARY KEY before touching data
   INSERT INTO hotels_search_demo_registry (entity, id_from, id_to, start_date, created) VALUES
@@ -92,12 +87,11 @@ BEGIN
     ('hotels_rooms',       v_rb + 1,  v_rb + p_hotels * 5,   v_start, NOW()),
     ('hotels_rates',       v_tb + 1,  v_tb + p_hotels * 4,   v_start, NOW()),
     ('hotels_rates_rooms', v_rrb + 1, v_rrb + p_hotels * 20, v_start, NOW()),
-    ('hotels_children_groups', v_gb + 1, v_gb + p_hotels * 8, v_start, NOW()),
-    ('hotels_children_prices', v_pb + 1, v_pb + p_hotels * 8, v_start, NOW());
+    ('hotels_children_groups', v_gb + 1, v_gb + p_hotels * 8, v_start, NOW());
 
   -- ---------- hotels
   INSERT INTO hotels (id, title, stars, stars_title, id_country, id_region, id_city, id_type, id_currency,
-                      lat, lng, timezone, check_in_from, check_out_to, allow_children, children_min_age, extra_bed_adult_price,
+                      lat, lng, timezone, check_in_from, check_out_to, allow_children, children_min_age,
                       active, tax_included, fee_included, week_start_dow)
   SELECT v_hb + s.n,
          CONCAT('Demo ', ELT(1 + s.n % 10, 'Grand', 'Park', 'Royal', 'Sea View', 'Palace', 'Garden', 'City', 'Resort', 'Plaza', 'Boutique'),
@@ -110,23 +104,19 @@ BEGIN
          IF(s.n <= p_hotels / 2, 'Europe/Kiev', 'Europe/Istanbul'), '14:00', '12:00',
          IF(s.n % 40 = 0, 0, 1),                                             -- ~2.5% adults only
          IF(s.n % 12 = 5, 3, 0),                                             -- ~8% children from 3 years
-         CASE WHEN CRC32(CONCAT('eb', s.n)) % 10 < 2 THEN NULL               -- ~20%: no extra adults (per room)
-              WHEN CRC32(CONCAT('eb', s.n)) % 10 = 2 THEN 0                  -- ~10%: free
-              ELSE IF(s.n <= p_hotels / 2, 400 + CRC32(CONCAT('ebp', s.n)) % 6 * 100, 20 + CRC32(CONCAT('ebp', s.n)) % 4 * 5) END,
          1, 1, 1, 1
   FROM hotels_search_demo_seq s WHERE s.n BETWEEN 1 AND p_hotels;
 
-  -- ---------- rooms: 3..5 per hotel
-  --   type          base R        E          S  max_adults  max_children  max_occupancy  without infants
-  --   Double          2  2        0/1        1  2 + E       2             3 + E          every 3rd hotel
-  --   Twin            2  2        1          0  2           1             3              yes
-  --   Triple          2  3        1 (or 0)   1  3           2             4              no
-  --   Family          2  4        1          2  4           3             5              yes
-  --   Junior Suite    2  2        2          1  3           2             4              no
-  --   ~10% of rooms have places_regular = NULL (default: max(base_occupancy, max_adults))
+  -- ---------- rooms: 3..5 per hotel; occupancy = existing beds only (extra beds and cots are conditions, not capacity)
+  --   type          beds             base  max_occupancy  max_adults  max_children  max_infants  without infants  extra beds / cots
+  --   Double        King x1           2    3              2 or 3      1             1            every 3rd hotel  1 / 1, or
+  --   Twin          Single x2         2    2              2           1             1            yes              1 / 1, and
+  --   Triple        Single x3         2    3              3           2             1            no               1 / 1, or
+  --   Family        King + Single x2  2    4              4           3             2            yes              1 / 2, and
+  --   Junior Suite  Queen + Single    2    3              2           2             NULL or 0    no               2 / 1, and
   INSERT INTO hotels_rooms (id, title, internal_name, id_hotel, id_type, allotment, square, base_occupancy, max_occupancy,
-                            max_adults, max_children, is_without_infants, pricing_model, floor, active, data,
-                            places_regular, extra_beds, share_slots)
+                            max_adults, max_children, is_without_infants, floor, active, data,
+                            max_infants, extra_beds, cots, cots_and_extra_beds)
   SELECT v_rb + (h.n - 1) * 5 + r.n,
          ELT(r.n, 'Standard Double Room', 'Standard Twin Room', 'Triple Room', 'Family Room', 'Junior Suite'),
          CONCAT('demo-', h.n, '-', r.n),
@@ -135,16 +125,18 @@ BEGIN
          2 + CRC32(CONCAT('alt', h.n, '-', r.n)) % 9,
          ELT(r.n, 20, 22, 28, 35, 45),
          2,
-         ELT(r.n, 3 + h.n % 2, 3, 4, 5, 4),
-         ELT(r.n, 2 + h.n % 2, 2, 3, 4, 3),
-         ELT(r.n, 2, 1, 2, 3, 2),
+         ELT(r.n, 3, 2, 3, 4, 3),
+         ELT(r.n, 2 + h.n % 2, 2, 3, 4, 2),
+         ELT(r.n, 1, 1, 2, 3, 2),
          ELT(r.n, IF(h.n % 3 = 0, 1, 0), 1, 0, 1, 0),
-         IF(r.n >= 3 AND h.n % 2 = 0, 2, 1),
          'high', 1,
-         '{"beds":[{"type":"7","count":"1"}],"bathrooms":[{"private":"1","inside":"1"}]}',
-         IF(CRC32(CONCAT('pr', h.n, '-', r.n)) % 10 = 0, NULL, ELT(r.n, 2, 2, 3, 4, 2)),
-         ELT(r.n, h.n % 2, 1, IF(h.n % 3 = 0, 0, 1), 1, 2),
-         ELT(r.n, 1, 0, 1, 2, 1)
+         CONCAT('{"beds":[', ELT(r.n, '{"type":"7","count":"1"}', '{"type":"8","count":"2"}', '{"type":"8","count":"3"}',
+                '{"type":"7","count":"1"},{"type":"8","count":"2"}', '{"type":"10","count":"1"},{"type":"8","count":"1"}'),
+                '],"bathrooms":[{"private":"1","inside":"1"}]}'),
+         IF(r.n = 5, IF(h.n % 4 = 0, 0, NULL), ELT(r.n, 1, 1, 1, 2, 1)),
+         ELT(r.n, 1, 1, 1, 1, 2),
+         ELT(r.n, 1, 1, 1, 2, 1),
+         ELT(r.n, 0, 1, 0, 1, 1)
   FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3;
 
@@ -167,90 +159,57 @@ BEGIN
   FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq t
   WHERE h.n BETWEEN 1 AND p_hotels AND t.n BETWEEN 1 AND 3 + h.n % 2;
 
-  -- ---------- rate-rooms: every rate x every room of the hotel
-  INSERT INTO hotels_rates_rooms (id, id_rate, id_room)
-  SELECT v_rrb + (h.n - 1) * 20 + (r.n - 1) * 4 + t.n, v_tb + (h.n - 1) * 4 + t.n, v_rb + (h.n - 1) * 5 + r.n
+  -- ---------- rate-rooms: every rate x every room of the hotel;
+  --            Triple on Bed & Breakfast in every 5th hotel with occupancy pricing: base occupancy of the rate-room = 3
+  INSERT INTO hotels_rates_rooms (id, id_rate, id_room, base_occupancy)
+  SELECT v_rrb + (h.n - 1) * 20 + (r.n - 1) * 4 + t.n, v_tb + (h.n - 1) * 4 + t.n, v_rb + (h.n - 1) * 5 + r.n,
+         IF(r.n = 3 AND t.n = 3 AND h.n % 10 = 0, 3, NULL)
   FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r JOIN hotels_search_demo_seq t
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3 AND t.n BETWEEN 1 AND 3 + h.n % 2;
 
-  -- ---------- children policy: age groups of the hotel (id_rate = 0), 4 variants; ~10% of hotels without groups
-  --   variant 0 (as on the extranet screen): 0-2 free/free, 3-6 free / extra bed fixed, 7-12 20% / extra bed fixed
-  --   variant 1: 0-1 free / no extra bed, 2-11 50% / fixed                        (12-17 = adults)
-  --   variant 2: 0-5 free/free, 6-17 30% / 40%
-  --   variant 3: 0-2 free / no extra bed, 3-12 fixed / fixed, 13-17 70% / 70%
-  --   variant 9: own groups of the Half Board rate (~25% of hotels): 0-3 free/free, 4-12 25% / 25%
-  --   fixed prices: UAH for hotels in 927, EUR-like for 907; type: 0 no, 1 free, 2 fixed per night, 3 % of single price
+  -- ---------- children policy of the hotel: age groups, 4 variants; ~10% of hotels without groups (children = adults)
+  --   price_type: 1 free, 2 fixed per child per night (UAH for hotels in 927, EUR-like for 907), 3 % of the room rate,
+  --               4 % of the adult price (room price / guests), 5 full adult price
+  --   variant 0 (as on the extranet screen): 0-2 free, 3-11 fixed, 12-17 50% of adult
+  --   variant 1: 0-1 free, 2-11 30% of the room rate                    (12-17 = adults)
+  --   variant 2: 0-5 free, 6-17 50% of adult
+  --   variant 3: 0-2 free, 3-12 fixed, 13-17 full adult price
   DROP TABLE IF EXISTS hotels_search_demo_child_tpl;
   CREATE TABLE hotels_search_demo_child_tpl (
     variant TINYINT NOT NULL, slot TINYINT NOT NULL, age_from TINYINT NOT NULL, age_to TINYINT NOT NULL,
-    bt TINYINT NOT NULL, bv_ua DECIMAL(10,2) NOT NULL, bv_tr DECIMAL(10,2) NOT NULL,
-    et TINYINT NOT NULL, ev_ua DECIMAL(10,2) NOT NULL, ev_tr DECIMAL(10,2) NOT NULL,
+    pt TINYINT NOT NULL, pv_ua DECIMAL(10,2) NOT NULL, pv_tr DECIMAL(10,2) NOT NULL,
     PRIMARY KEY (variant, slot)
   ) ENGINE=InnoDB;
   INSERT INTO hotels_search_demo_child_tpl VALUES
-    (0, 1, 0, 2, 1, 0, 0, 1, 0, 0), (0, 2, 3, 6, 1, 0, 0, 2, 800, 30), (0, 3, 7, 12, 3, 20, 20, 2, 800, 30),
-    (1, 1, 0, 1, 1, 0, 0, 0, 0, 0), (1, 2, 2, 11, 3, 50, 50, 2, 800, 30),
-    (2, 1, 0, 5, 1, 0, 0, 1, 0, 0), (2, 2, 6, 17, 3, 30, 30, 3, 40, 40),
-    (3, 1, 0, 2, 1, 0, 0, 0, 0, 0), (3, 2, 3, 12, 2, 400, 15, 2, 800, 30), (3, 3, 13, 17, 3, 70, 70, 3, 70, 70),
-    (9, 4, 0, 3, 1, 0, 0, 1, 0, 0), (9, 5, 4, 12, 3, 25, 25, 3, 25, 25);
+    (0, 1, 0, 2, 1, 0, 0), (0, 2, 3, 11, 2, 400, 15), (0, 3, 12, 17, 4, 50, 50),
+    (1, 1, 0, 1, 1, 0, 0), (1, 2, 2, 11, 3, 30, 30),
+    (2, 1, 0, 5, 1, 0, 0), (2, 2, 6, 17, 4, 50, 50),
+    (3, 1, 0, 2, 1, 0, 0), (3, 2, 3, 12, 2, 300, 10), (3, 3, 13, 17, 5, 0, 0);
 
   -- hotel groups (id = base + (h - 1) * 8 + slot)
-  INSERT INTO hotels_children_groups (id, id_hotel, id_rate, age_from, age_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_gb + (h.n - 1) * 8 + c.slot, v_hb + h.n, 0, c.age_from, c.age_to,
-         c.bt, IF(h.n <= p_hotels / 2, c.bv_ua, c.bv_tr), c.et, IF(h.n <= p_hotels / 2, c.ev_ua, c.ev_tr), 1
+  INSERT INTO hotels_children_groups (id, id_hotel, age_from, age_to, price_type, price_value, active)
+  SELECT v_gb + (h.n - 1) * 8 + c.slot, v_hb + h.n, c.age_from, c.age_to, c.pt, IF(h.n <= p_hotels / 2, c.pv_ua, c.pv_tr), 1
   FROM hotels_search_demo_seq h JOIN hotels_search_demo_child_tpl c
     ON c.variant = IF(h.n % 5 = 4, 0, h.n % 5)
   WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 10 <> 4;
 
-  -- own groups of the Half Board rate (they replace the hotel groups for this rate)
-  INSERT INTO hotels_children_groups (id, id_hotel, id_rate, age_from, age_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_gb + (h.n - 1) * 8 + c.slot, v_hb + h.n, v_tb + (h.n - 1) * 4 + 4, c.age_from, c.age_to,
-         c.bt, IF(h.n <= p_hotels / 2, c.bv_ua, c.bv_tr), c.et, IF(h.n <= p_hotels / 2, c.ev_ua, c.ev_tr), 1
-  FROM hotels_search_demo_seq h JOIN hotels_search_demo_child_tpl c ON c.variant = 9
-  WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 4 = 1;          -- h % 4 = 1 -> h % 2 = 1 -> the hotel has a Half Board rate
-
-  -- inactive groups must be ignored (13-17 stay adults)
-  INSERT INTO hotels_children_groups (id, id_hotel, id_rate, age_from, age_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_gb + (h.n - 1) * 8 + 6, v_hb + h.n, 0, 13, 17, 1, 0, 1, 0, 0
+  -- inactive groups must be ignored (13-17 stay as configured above)
+  INSERT INTO hotels_children_groups (id, id_hotel, age_from, age_to, price_type, price_value, active)
+  SELECT v_gb + (h.n - 1) * 8 + 6, v_hb + h.n, 13, 17, 1, 0, 0
   FROM hotels_search_demo_seq h WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 25 = 11;
-
-  -- exceptions (hotels_children_prices), id = base + (h - 1) * 8 + n:
-  --   n 1..3  "children free in summer" on BAR, groups from 3 years, July-August          (h % 3 = 0)
-  --   n 4..6  New Year surcharge for all rates, groups from 1 year, Dec 24 - Jan 8         (h % 4 = 2)
-  --   n 7     Non-refundable: groups from 6 years always 10% / 10%                          (h % 7 = 3)
-  INSERT INTO hotels_children_prices (id, id_hotel, id_group, id_rate, date_from, date_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_pb + (h.n - 1) * 8 + c.slot, v_hb + h.n, v_gb + (h.n - 1) * 8 + c.slot, v_tb + (h.n - 1) * 4 + 1,
-         v_summer, v_summer + INTERVAL 61 DAY, 1, 0, 1, 0, 1
-  FROM hotels_search_demo_seq h JOIN hotels_search_demo_child_tpl c
-    ON c.variant = IF(h.n % 5 = 4, 0, h.n % 5) AND c.age_from >= 3
-  WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 10 <> 4 AND h.n % 3 = 0;
-
-  INSERT INTO hotels_children_prices (id, id_hotel, id_group, id_rate, date_from, date_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_pb + (h.n - 1) * 8 + 3 + c.slot, v_hb + h.n, v_gb + (h.n - 1) * 8 + c.slot, 0,
-         v_newyear, v_newyear + INTERVAL 15 DAY,
-         2, IF(h.n <= p_hotels / 2, 1000, 40), 2, IF(h.n <= p_hotels / 2, 1500, 60), 1
-  FROM hotels_search_demo_seq h JOIN hotels_search_demo_child_tpl c
-    ON c.variant = IF(h.n % 5 = 4, 0, h.n % 5) AND c.age_from >= 1
-  WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 10 <> 4 AND h.n % 4 = 2;
-
-  INSERT INTO hotels_children_prices (id, id_hotel, id_group, id_rate, date_from, date_to, bed_type, bed_value, extra_type, extra_value, active)
-  SELECT v_pb + (h.n - 1) * 8 + 7, v_hb + h.n, v_gb + (h.n - 1) * 8 + c.slot, v_tb + (h.n - 1) * 4 + 2,
-         NULL, NULL, 3, 10, 3, 10, 1
-  FROM hotels_search_demo_seq h JOIN hotels_search_demo_child_tpl c
-    ON c.variant = IF(h.n % 5 = 4, 0, h.n % 5) AND c.age_from >= 6
-  WHERE h.n BETWEEN 1 AND p_hotels AND h.n % 10 <> 4 AND h.n % 7 = 3;
 
   DROP TABLE hotels_search_demo_child_tpl;
 
   -- ---------- helper: rate-room facts used by the price generator
   DROP TABLE IF EXISTS hotels_search_demo_rate_rooms;
+  --   occ = 1: the rate-room has prices by number of guests (Triple / Family / Junior Suite in even hotels)
   CREATE TABLE hotels_search_demo_rate_rooms (
     id INT NOT NULL PRIMARY KEY, h INT NOT NULL, r INT NOT NULL, t INT NOT NULL,
-    id_room INT NOT NULL, id_rate INT NOT NULL, is_ua TINYINT NOT NULL, pf DECIMAL(12,4) NOT NULL,
+    id_room INT NOT NULL, id_rate INT NOT NULL, is_ua TINYINT NOT NULL, occ TINYINT NOT NULL, pf DECIMAL(12,4) NOT NULL,
     KEY (h)
   ) ENGINE=InnoDB;
   INSERT INTO hotels_search_demo_rate_rooms
-  SELECT rr.id, h.n, r.n, t.n, rr.id_room, rr.id_rate, h.n <= p_hotels / 2,
+  SELECT rr.id, h.n, r.n, t.n, rr.id_room, rr.id_rate, h.n <= p_hotels / 2, r.n >= 3 AND h.n % 2 = 0,
          IF(h.n <= p_hotels / 2, 2000, 90)                                  -- currency level (UAH / EUR)
          * ELT(2 + h.n % 4 - 1, 0.6, 0.8, 1.0, 1.5)                          -- stars 2..5
          * ELT(r.n, 1.0, 1.0, 1.35, 1.6, 2.2)                                -- room type
@@ -301,14 +260,14 @@ BEGIN
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1 AND rr.t = 2
       AND CRC32(CONCAT('o', rr.id, '-', dd.n)) % 100 < 3;
 
-    -- daily occupancy prices (rooms with pricing_model = 2): explicit price for 1 and 3 guests on ~8% of nights,
-    --   ~2% of rows with price 0 (= not set, must be ignored)
+    -- daily occupancy prices (rate-rooms with prices by number of guests, the derived rate too): explicit price
+    --   for 1 and 3 guests on ~8% of nights, ~2% of rows with price 0 (= not set, must be ignored)
     INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price)
     SELECT rr.id, rr.id_room, rr.id_rate, g.n, dd.d,
            IF(CRC32(CONCAT('z', rr.id, '-', g.n, '-', dd.n)) % 50 = 0, 0,
               ROUND(rr.pf * IF(rr.is_ua, dd.s_ua, dd.s_tr) * dd.wk * ELT(g.n, 0.85, 1.0, 1.25, 1.45), 0))
     FROM hotels_search_demo_rate_rooms rr
-    JOIN hotels_rooms ro ON ro.id = rr.id_room AND ro.pricing_model = 2
+    JOIN hotels_rooms ro ON ro.id = rr.id_room AND rr.occ = 1
     JOIN hotels_search_demo_days dd
     JOIN hotels_search_demo_seq g ON g.n IN (1, 3) AND g.n <= ro.max_occupancy
     WHERE rr.h BETWEEN v_from AND v_from + v_chunk - 1
@@ -327,15 +286,32 @@ BEGIN
     SET v_from = v_from + v_chunk;
   END WHILE;
 
-  -- ---------- occupancy-based pricing (rooms with pricing_model = 2): 1 guest -10%, 3 guests +15%, 4 guests +30%
-  --            ~10% of rate-rooms have 3 guests switched off (active = 0 -> this guest count is not sold)
-  INSERT INTO hotels_rates_occupancy (id_rate_room, id_room, id_rate, guests, amount, active)
-  SELECT rr.id, rr.id_room, rr.id_rate, g.n, ELT(g.n, -10, 0, 15, 30),
-         IF(g.n = 3 AND CRC32(CONCAT('g3', rr.id)) % 10 = 0, 0, 1)
+  -- ---------- prices by number of guests (rate-rooms with occ = 1, independent rates):
+  --            1 guest -10%, 3 guests +15% (~30%: a fixed amount per night instead), 4 guests +30%;
+  --            ~20% of rate-rooms have 1 guest switched off, ~10% — 3 guests (active = 0 -> this number of guests is not sold)
+  INSERT INTO hotels_rates_occupancy (id_rate_room, id_room, id_rate, guests, amount_type, amount, active)
+  SELECT rr.id, rr.id_room, rr.id_rate, g.n,
+         IF(g.n = 3 AND CRC32(CONCAT('g3a', rr.id)) % 10 < 3, 1, 0),
+         IF(g.n = 3 AND CRC32(CONCAT('g3a', rr.id)) % 10 < 3, IF(rr.is_ua, 350, 14), ELT(g.n, -10, 0, 15, 30)),
+         CASE WHEN g.n = 1 AND CRC32(CONCAT('g1', rr.id)) % 10 < 2 THEN 0
+              WHEN g.n = 3 AND CRC32(CONCAT('g3', rr.id)) % 10 = 0 THEN 0 ELSE 1 END
   FROM hotels_search_demo_rate_rooms rr
   JOIN hotels_rooms ro ON ro.id = rr.id_room
   JOIN hotels_search_demo_seq g ON g.n IN (1, 3, 4) AND g.n <= ro.max_occupancy
-  WHERE ro.pricing_model = 2;
+  WHERE rr.occ = 1 AND rr.t <> 2 AND NOT (rr.r = 3 AND rr.t = 3 AND rr.h % 10 = 0);
+
+  -- Triple on Bed & Breakfast with base occupancy 3: 1 guest -20%, 2 guests -10%
+  INSERT INTO hotels_rates_occupancy (id_rate_room, id_room, id_rate, guests, amount_type, amount, active)
+  SELECT rr.id, rr.id_room, rr.id_rate, g.n, 0, ELT(g.n, -20, -10), 1
+  FROM hotels_search_demo_rate_rooms rr JOIN hotels_search_demo_seq g ON g.n IN (1, 2)
+  WHERE rr.occ = 1 AND rr.r = 3 AND rr.t = 3 AND rr.h % 10 = 0;
+
+  -- derived Non-refundable inherits prices by number of guests from BAR; ~20% of its rate-rooms have an own row
+  -- "3 guests: +amount" (counted from the Non-refundable price)
+  INSERT INTO hotels_rates_occupancy (id_rate_room, id_room, id_rate, guests, amount_type, amount, active)
+  SELECT rr.id, rr.id_room, rr.id_rate, 3, 1, IF(rr.is_ua, 200, 8), 1
+  FROM hotels_search_demo_rate_rooms rr
+  WHERE rr.occ = 1 AND rr.t = 2 AND CRC32(CONCAT('own3', rr.id)) % 10 < 2;
 
   DROP TABLE hotels_search_demo_rate_rooms;
   DROP TABLE hotels_search_demo_days;

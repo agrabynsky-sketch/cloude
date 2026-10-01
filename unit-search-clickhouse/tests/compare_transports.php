@@ -23,6 +23,9 @@ foreach($cases as $case) {
     $criteria = array('checkin' => $checkin, 'nights' => $nights, 'rooms' => $rooms, 'id_region' => $regionId, 'limit' => 1000);
     $a = $http->search($criteria);
     $b = $pdo->search($criteria);
+    if(!isset($kidsHotel) && !empty($rooms[0]['children']) && !empty($a['items'])) {
+        $kidsHotel = $a['items'][0]['id_hotel'];         // отель, где есть номера для взрослых с детьми — для карточки ниже
+    }
     $fail += $a == $b ? 0 : 1;
     printf("search region=%d nights=%d rooms=%s: hotels http=%d mysql=%d, same result: %s\n", $regionId, $nights, json_encode($rooms),
         $a['total'], $b['total'], $a == $b ? 'yes' : 'NO');
@@ -33,9 +36,9 @@ $rb = $pdo->hotelRates($first, array('checkin' => $checkin, 'nights' => 7, 'gues
 printf("hotelRates hotel=%d: room-rates http=%d mysql=%d, same result: %s\n", $first, count($ra), count($rb), $ra == $rb ? 'yes' : 'NO');
 $fail += $ra == $rb ? 0 : 1;
 $card = array('checkin' => $checkin, 'nights' => 7, 'rooms' => array(array('adults' => 2, 'children' => array(7, 4)), array('adults' => 2)));
-$oa = $http->hotelRooms($first, $card);
-$ob = $pdo->hotelRooms($first, $card);
-printf("hotelRooms hotel=%d (2 rooms, children): best http=%s mysql=%s, same result: %s\n", $first,
+$oa = $http->hotelRooms($kidsHotel, $card);
+$ob = $pdo->hotelRooms($kidsHotel, $card);
+printf("hotelRooms hotel=%d (2 rooms, children): best http=%s mysql=%s, same result: %s\n", $kidsHotel,
     $oa['best'] ? $oa['best']['price'] : 'null', $ob['best'] ? $ob['best']['price'] : 'null', $oa == $ob ? 'yes' : 'NO');
 $fail += $oa == $ob ? 0 : 1;
 echo "\nexample search item:\n";
