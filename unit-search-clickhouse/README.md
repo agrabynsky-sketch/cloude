@@ -400,6 +400,7 @@ class Search_Model_HotelAvailability extends Search_Model_Abstract {
 | `tests/compare_transports.php` — HTTP 8123 против MySQL-протокола 9004 | ответы совпадают полностью, в т.ч. с детьми, несколькими номерами и `hotelRooms()` |
 | `tests/controller_smoke.php` — `SearchController` через `Zend_Controller_Front` | 200 (в т.ч. `adults` + `children`, `rooms` JSON и `rooms[i][...]`, лучшая комбинация в карточке == цене в выдаче) / 400 (возраст 18, дата в прошлом, неверная дата) / 503 — OK |
 | `mysql/01b_occupancy_children.sql` | на чистом дампе и поверх прошлой версии прототипа, повторный запуск — без ошибок; `clickhouse/01b_upgrade_occupancy.sql` даёт ту же структуру таблицы, что `01_schema.sql` |
+| `mysql/03_demo_cleanup.sql` | база вернулась ровно к исходному дампу (число строк и строки окна по числу гостей совпадают), 4 мин 17 с |
 
 Скорость — таблица в разделе 5 («Скорость»): поиск только взрослых 25–57 мс, с детьми ~145–175 мс, 2–3 номера ~200–280 мс, карточка отеля 26–43 мс (стенд 4 vCPU, данные после `OPTIMIZE`).
 
