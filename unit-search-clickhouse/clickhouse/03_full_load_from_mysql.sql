@@ -90,7 +90,7 @@ FROM
 GROUP BY id_rate_room;
 
 -- дневные цены на число гостей: одна строка на (рум-рейт, дата), массивы гостей и цен в копейках;
--- при дублях (rate_room, date, guests) берётся строка с максимальным id; price = 0 оставляем — это "не задано"
+-- при дублях (rate_room, date, guests) берётся строка с максимальным id; price = 0 оставляем — это «на g гостей в эту ночь не продаётся»
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_occupancy_daily;
 CREATE TABLE unit_search.hotels_search_stg_occupancy_daily ENGINE = MergeTree ORDER BY (id_rate_room, date) AS
 SELECT id_rate_room, date, groupArray(guests) AS dg, groupArray(price_minor) AS dp

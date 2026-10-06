@@ -22,14 +22,16 @@
  *   Какие g продаются (gmask): g <= max_adults (0 -> max(max_occupancy, base_occupancy)), g <= max_occupancy, g <= 8
  *   и g не выключено (строка окна с active = 0).
  *   Самостоятельный тариф, цена ночи за g:
- *     дневная цена hotels_rates_occupancy_daily(rate_room, g, дата) с price > 0, иначе
+ *     дневная цена hotels_rates_occupancy_daily(rate_room, g, дата): price > 0 — цена ночи, price <= 0 — на g гостей
+ *     в эту ночь не продаётся (в нарастающую сумму идёт CLOSED); нет дневной строки ->
  *     строка окна hotels_rates_occupancy(rate_room, g): amount_type 0 -> база × (100 + amount) / 100, 1 -> база + amount
  *     (не меньше 0); нет строки -> база.
  *   Производный тариф, цена ночи за g:
- *     своя дневная цена (price > 0) > своя строка окна (от базовой цены производного) > как у родителя:
- *     цена родителя за g (его дневная цена или его строка окна от его базы) × (100 + dv) / 100. В ночь со своей ценой
- *     (derive_type = 0) строка окна родителя применяется к своей цене, дневные цены родителя не действуют.
+ *     своя дневная цена (0 — закрыто) > своя строка окна (от базовой цены производного) > как у родителя:
+ *     цена родителя за g (его дневная цена, 0 — закрыто, или его строка окна от его базы) × (100 + dv) / 100. В ночь со
+ *     своей ценой (derive_type = 0) строка окна родителя применяется к своей цене, дневные цены родителя не действуют.
  *     Выключенное у родителя g выключено и у производного, если у производного нет своей строки на это g.
+ *   Закрытая ночь добавляет к c{g} CLOSED = 2^40: разность нарастающих сумм >= 2^40 — на g гостей проживание не продаётся.
  *   base_occupancy рум-рейта: hotels_rates_rooms.base_occupancy, NULL -> hotels_rooms.base_occupancy; у производного — как у родителя.
  *   Это только смысл цены в календаре (строки окна задаются относительно неё); в расчёт напрямую не входит.
  *  Вместимость: max_occupancy / max_adults / max_children — только существующие места; max_infants (NULL -> 255 = без лимита).
@@ -55,6 +57,7 @@ class Search_Sync_Builder {
     const MAX_ROOMS = 4;        // k2..k4: хватает ли номеров, когда в запросе до 4 номеров
     const MAX_CHILD_AGE = 17;   // age_group: возраста 0..17
     const NO_LIMIT = 255;       // max_infants без лимита / children_min_age «дети не принимаются»
+    const CLOSED = 1099511627776;   // 2^40: ночь, где на g гостей не продаётся (дневная цена 0); сумма >= 2^40 = не продаётся
 
     // типы детской цены (hotels_children_groups.price_type)
     const CHILD_FREE = 1;
@@ -315,14 +318,16 @@ class Search_Sync_Builder {
                     $dayOwn = isset($daily[$i]) ? $daily[$i] : null;
                     $dayPar = (!is_null($parBase) && isset($parDaily[$i])) ? $parDaily[$i] : null;
                     foreach($rules as $g => $rule) {
-                        if($dayOwn && isset($dayOwn[$g]) && $dayOwn[$g] > 0) {
-                            $p = $dayOwn[$g];                                         // своя дневная цена
+                        if($dayOwn && isset($dayOwn[$g])) {
+                            $p = $dayOwn[$g] > 0 ? $dayOwn[$g] : self::CLOSED;          // своя дневная цена, 0 — закрыто
                         } elseif($rule[0] || is_null($parBase)) {
                             $p = self::applyOccupancy($base, $rule[1], $rule[2]);     // своя строка / база; своя цена ночи + строка родителя
+                        } elseif($dayPar && isset($dayPar[$g])) {
+                            // как у родителя: его дневная цена × (100 + dv) / 100, 0 — закрыто и у производного
+                            $p = $dayPar[$g] > 0 ? self::roundDiv($dayPar[$g] * (100 + $dv), 100) : self::CLOSED;
                         } else {
-                            // как у родителя: его цена за g (дневная или строка окна от его базы) × (100 + dv) / 100
-                            $pg = ($dayPar && isset($dayPar[$g]) && $dayPar[$g] > 0) ? $dayPar[$g] : self::applyOccupancy($parBase, $rule[1], $rule[2]);
-                            $p = self::roundDiv($pg * (100 + $dv), 100);
+                            // как у родителя: его строка окна от его базы × (100 + dv) / 100
+                            $p = self::roundDiv(self::applyOccupancy($parBase, $rule[1], $rule[2]) * (100 + $dv), 100);
                         }
                         $sum[$g] += $p;
                     }

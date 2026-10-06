@@ -19,7 +19,7 @@
 --                               и строки «1 гость -20%», «2 гостя -10%»; производный Non-refundable наследует цены по гостям
 --                               родителя, у ~20% его рум-рейтов своя строка «3 гостя» суммой
 --   hotels_rates_occupancy_daily цены за 1 и 3 гостей на ~8% ночей у тех же рум-рейтов
---                               (~2% строк с price = 0 — "не задано", и строки для выключенного числа гостей)
+--                               (~2% строк с price = 0 — "на g гостей в эту ночь не продаётся", и строки для выключенного числа гостей)
 --   вместимость и дети (нужен mysql/01b_occupancy_children.sql):
 --     hotels                        ~2.5% отелей не принимают детей, ~8% — с 3 лет
 --     hotels_rooms                  max_adults / max_children / max_occupancy (только существующие места) / max_infants /
@@ -261,7 +261,7 @@ BEGIN
       AND CRC32(CONCAT('o', rr.id, '-', dd.n)) % 100 < 3;
 
     -- daily occupancy prices (rate-rooms with prices by number of guests, the derived rate too): explicit price
-    --   for 1 and 3 guests on ~8% of nights, ~2% of rows with price 0 (= not set, must be ignored)
+    --   for 1 and 3 guests on ~8% of nights, ~2% of rows with price 0 (= not sold for g guests that night)
     INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price)
     SELECT rr.id, rr.id_room, rr.id_rate, g.n, dd.d,
            IF(CRC32(CONCAT('z', rr.id, '-', g.n, '-', dd.n)) % 50 = 0, 0,

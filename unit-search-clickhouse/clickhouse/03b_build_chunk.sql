@@ -66,18 +66,20 @@ FROM
         toInt64(ifNull(a.allotment, g.room_allotment)) - toInt64(ifNull(a.net_booked, 0)) AS free,
         toUInt8(ifNull(ifNull(a.active, 1) = 1 AND free > 0 AND base IS NOT NULL AND base > 0, 0)) AS sell,
         -- цены номера на 1..8 гостей (gp[g]), правило r = (режим, тип, значение) из rates_rooms_ext:
-        --   своя дневная цена (price > 0); иначе режим 1 или своя цена ночи у производного — строка окна от базы ночи
-        --   (тип 0: % в базисных пунктах, 1: сумма); иначе (производный, как у родителя) — цена родителя за g
-        --   (его дневная цена или его строка окна от его базы) × (100 + dv) / 100
+        --   своя дневная цена: price > 0 — цена ночи, price <= 0 — на g гостей в эту ночь не продаётся (2^40);
+        --   иначе режим 1 или своя цена ночи у производного — строка окна от базы ночи (тип 0: % в базисных пунктах, 1: сумма);
+        --   иначе (производный, как у родителя) — дневная цена родителя (0 — закрыто) или его строка окна от его базы,
+        --   × (100 + dv) / 100
         arrayMap((r, gg) -> if(r.1 = 0 OR base IS NULL, toInt64(0),
-            if(has(od.dg, gg) AND od.dp[indexOf(od.dg, gg)] > 0, od.dp[indexOf(od.dg, gg)],
+            if(has(od.dg, gg), if(od.dp[indexOf(od.dg, gg)] > 0, od.dp[indexOf(od.dg, gg)], toInt64(1099511627776)),
                 if(r.1 = 1 OR par_base IS NULL,
                     if(r.2 = 1, greatest(toInt64(0), assumeNotNull(base) + r.3),
                         if(r.3 = 0, assumeNotNull(base), greatest(toInt64(0), intDiv(assumeNotNull(base) * (10000 + r.3) + 5000, 10000)))),
-                    intDiv(if(has(pod.dg, gg) AND pod.dp[indexOf(pod.dg, gg)] > 0, pod.dp[indexOf(pod.dg, gg)],
-                        if(r.2 = 1, greatest(toInt64(0), assumeNotNull(par_base) + r.3),
-                            if(r.3 = 0, assumeNotNull(par_base),
-                                greatest(toInt64(0), intDiv(assumeNotNull(par_base) * (10000 + r.3) + 5000, 10000))))) * (100 + dv) + 50, 100)))),
+                    if(has(pod.dg, gg) AND pod.dp[indexOf(pod.dg, gg)] <= 0, toInt64(1099511627776),
+                        intDiv(if(has(pod.dg, gg), pod.dp[indexOf(pod.dg, gg)],
+                            if(r.2 = 1, greatest(toInt64(0), assumeNotNull(par_base) + r.3),
+                                if(r.3 = 0, assumeNotNull(par_base),
+                                    greatest(toInt64(0), intDiv(assumeNotNull(par_base) * (10000 + r.3) + 5000, 10000))))) * (100 + dv) + 50, 100))))),
             g.rules, arrayMap(x -> toUInt8(x), range(1, 9))) AS gp,
         -- ограничения даты: своя строка цены, иначе значения тарифа
         toUInt8(ifNull(p.cta, 0) > 0) AS cta,

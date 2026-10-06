@@ -57,7 +57,7 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
     $daily = function($rrId, $g, $date) use ($db) {
         $v = $rrId ? $db->fetchOne('SELECT price FROM hotels_rates_occupancy_daily WHERE id_rate_room = ? AND guests = ? AND date = ?
             ORDER BY id DESC LIMIT 1', array($rrId, $g, $date)) : false;
-        return (false !== $v && !is_null($v) && $v > 0) ? (int)round($v * 100) : null;
+        return (false !== $v && !is_null($v)) ? (int)round($v * 100) : null;      // <= 0 — на g гостей в эту ночь не продаётся
     };
     // строка окна к цене: процент или сумма, не меньше 0; нет строки — цена как есть
     $apply = function($base, $row) {
@@ -127,14 +127,7 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
             || (!is_null($room['max_infants']) && $infants > (int)$room['max_infants'])) {
             continue;
         }
-        $g = null;
-        for($x = $a; $x <= $a + $placed && is_null($g); $x++) {
-            $g = $sold($x) ? $x : null;
-        }
-        if(is_null($g)) {
-            continue;
-        }
-        // цена номера за $guests гостей в ночь $i (null — ночь не продаётся)
+        // цена номера за $guests гостей в ночь $i: null — ночь не продаётся совсем, array(база, null) — закрыта на $guests гостей
         $nightPrice = function($guests, $i) use ($days, $rrId, $parentRrId, $rate, $price, $occRow, $daily, $apply) {
             $own = $price($rrId, $days[$i]);
             $parBase = null;
@@ -159,6 +152,10 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
             $d = $daily($rrId, $guests, $days[$i]);
             if(!is_null($d)) {
                 $GLOBALS['referenceDailyHits'] = (isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0) + 1;
+                if($d <= 0) {
+                    $GLOBALS['referenceDailyClosed'] = (isset($GLOBALS['referenceDailyClosed']) ? $GLOBALS['referenceDailyClosed'] : 0) + 1;
+                    return array($base, null);
+                }
                 return array($base, $d);
             }
             $ownRow = $occRow($rrId, $guests);
@@ -170,6 +167,10 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
                 return array($base, $apply($base, $parRow));             // своя цена ночи: строка родителя к своей цене
             }
             $pd = $daily($parentRrId, $guests, $days[$i]);
+            if(!is_null($pd) && $pd <= 0) {
+                $GLOBALS['referenceDailyClosed'] = (isset($GLOBALS['referenceDailyClosed']) ? $GLOBALS['referenceDailyClosed'] : 0) + 1;
+                return array($base, null);                                // закрыто у родителя — закрыто и у производного
+            }
             return array($base, reference_round((is_null($pd) ? $apply($parBase, $parRow) : $pd) * (100 + $dv) / 100));
         };
         $ok = true;
@@ -178,7 +179,7 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
             $av = $db->fetchRow('SELECT * FROM hotels_rooms_availability WHERE id_room = ? AND date = ? ORDER BY id DESC LIMIT 1', array($rr['id_room'], $days[$i]));
             $allot = ($av && !is_null($av['allotment'])) ? (int)$av['allotment'] : (int)$room['allotment'];
             $free = $allot - ($av ? (int)$av['net_booked'] : 0);
-            $ok = !($av && !$av['active']) && $free > 0 && !is_null($nightPrice($g, $i));
+            $ok = !($av && !$av['active']) && $free > 0 && !is_null($nightPrice(1, $i));
             $roomsLeft = min($roomsLeft, $free);
         }
         if(!$ok) {
@@ -197,15 +198,30 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
         if($dep && $dep['ctd']) {
             continue;
         }
-        $stay = function($guests) use ($nights, $nightPrice) {
+        // цены номера за $guests гостей по ночам; null — на $guests гостей не продаётся (выключено или закрыта хотя бы одна ночь)
+        $stay = function($guests) use ($nights, $nightPrice, $sold) {
+            if(!$sold($guests)) {
+                return null;
+            }
             $list = array();
             for($i = 0; $i < $nights; $i++) {
                 $p = $nightPrice($guests, $i);
+                if(is_null($p[1])) {
+                    return null;
+                }
                 $list[] = $p[1];
             }
             return $list;
         };
-        $nightly = $stay($g);
+        $g = null;
+        $nightly = null;
+        for($x = $a; $x <= $a + $placed && is_null($g); $x++) {
+            $nightly = $stay($x);
+            $g = is_null($nightly) ? null : $x;
+        }
+        if(is_null($g)) {
+            continue;
+        }
         $roomPrice = array_sum($nightly);
         // цены детей от цены номера за g гостей; свободные места цены (g - a) — полный перебор подмножеств детей с местом
         $kidPrice = array();
@@ -246,8 +262,7 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
         }
         list($total, $paying) = $best;
         // не дороже, чем если бы платящие дети были взрослыми
-        if($paying > 0 && $sold($g + $paying)) {
-            $asAdults = $stay($g + $paying);
+        if($paying > 0 && !is_null($asAdults = $stay($g + $paying))) {
             if(array_sum($asAdults) < $total) {
                 $total = array_sum($asAdults);
                 $nightly = $asAdults;

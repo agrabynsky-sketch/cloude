@@ -361,8 +361,15 @@ class Search_Model_Stay extends Search_Model_Abstract {
         } else {
             $cols[] = '1 AS cap';
         }
+        // на g гостей продаётся, если бит в gmask и ни одна ночь проживания не закрыта на g гостей (дневная цена 0 добавляет
+        // к нарастающей сумме 2^40): gm — gmask без закрытых на эти даты g
+        $closed = Search_Occupancy::CLOSED;
         if($k > 1 || $hasKids) {
-            $cols[] = 'any(s.gmask) AS gm';
+            $bits = array();
+            for($g = $gMin; $g <= $gMax; $g++) {
+                $bits[] = "if(a$g >= $closed, " . (1 << $g) . ', 0)';
+            }
+            $cols[] = 'bitAnd(any(s.gmask), bitNot(toUInt16(' . implode(' + ', $bits) . '))) AS gm';
         }
         if($hasKids) {
             $cols[] = 'any(s.max_children) AS mch, any(s.max_occupancy) AS mocc, any(s.max_infants) AS minf,
@@ -378,7 +385,8 @@ class Search_Model_Stay extends Search_Model_Abstract {
                 WHERE $where
                   AND " . $this->_roomsPrefilter($c) . "
                 GROUP BY id_hotel, id_rate_room
-                HAVING count() = 2 AND " . $this->_having($c);
+                HAVING count() = 2 AND " . $this->_having($c) . ($k > 1 || $hasKids ? '' : "
+                   AND a$gMin < $closed");
         $keep = 'id_hotel, id_rate_room, id_room, id_rate, id_board_type, id_cancel_policy, refundable, id_currency, stars, cap';
         $prices = array();
         for($g = $gMin; $g <= $gMax; $g++) {

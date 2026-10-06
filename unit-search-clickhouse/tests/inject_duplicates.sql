@@ -33,7 +33,7 @@ FROM hotels_rates_occupancy o
 JOIN hotels_rooms r ON r.id = o.id_room
 WHERE r.id_hotel BETWEEN @h1 AND @h2 AND CRC32(CONCAT('dup', o.id)) % 3 = 0;
 
--- дневные цены на гостей: другая цена, пятая часть — 0 ("не задано" перекрывает старую строку)
+-- дневные цены на гостей: другая цена, пятая часть — 0 ("на g гостей не продаётся", перекрывает старую строку)
 INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price)
 SELECT d.id_rate_room, d.id_room, d.id_rate, d.guests, d.date, IF(CRC32(CONCAT('dd', d.id)) % 5 = 0, 0, d.price + 11)
 FROM hotels_rates_occupancy_daily d

@@ -187,25 +187,27 @@ try {
     $undo[] = function() use ($mysql, $d1) {
         $mysql->query('DELETE FROM hotels_rates_occupancy_daily WHERE id = ?', array($d1));
     };
-    // строка с price = 0 ("не задано") — на ночь, где своих дневных цен ещё нет
-    $second = null;
-    for($i = 1; $i < $nights && !$second; $i++) {
-        $date = date('Y-m-d', strtotime("$checkin +$i day"));
-        if(!$mysql->fetchOne('SELECT COUNT(*) FROM hotels_rates_occupancy_daily WHERE id_rate_room = ? AND guests = 3 AND date = ?', array($rr2, $date))) {
-            $second = $date;
-        }
-    }
+    sync($queue, $worker, $h2, 'occupancy_daily');
+    $after3 = current_rates($model, $h2, $stay3);
+    check("8. daily price for 3 guests (hotel $h2, rr $rr2) == reference", expected_rates($mysql, $h2, $stay3, $today), $after3, $failures);
+    check('   first night = 1234.56', $total2 - $nightly2[0] + 123456, isset($after3[$rr2]) ? $after3[$rr2] : null, $failures);
+
+    // 8b. дневная цена 0 на другую ночь = «на 3 гостей в эту ночь не продаётся»: рум-рейт пропадает для 3 гостей на всё проживание,
+    //     для 2 гостей остаётся
+    $stay2 = array('checkin' => $checkin, 'nights' => $nights, 'guests' => 2);
+    $before2 = current_rates($model, $h2, $stay2);
+    $second = date('Y-m-d', strtotime("$checkin +" . ($nights - 1) . ' day'));
     $mysql->query('INSERT INTO hotels_rates_occupancy_daily (id_rate_room, id_room, id_rate, guests, date, price) VALUES (?, ?, ?, 3, ?, 0)',
         array($rr2, $row['id_room'], $row['id_rate'], $second));
     $d2 = (int)$mysql->lastInsertId();
     $undo[] = function() use ($mysql, $d2) {
         $mysql->query('DELETE FROM hotels_rates_occupancy_daily WHERE id = ?', array($d2));
     };
-    $before3 = current_rates($model, $h2, $stay3);
-    sync($queue, $worker, $h2, 'occupancy_daily');
-    $after3 = current_rates($model, $h2, $stay3);
-    check("8. daily price for 3 guests (hotel $h2, rr $rr2) == reference", expected_rates($mysql, $h2, $stay3, $today), $after3, $failures);
-    check('   first night = 1234.56, price 0 on another night ignored', $total2 - $nightly2[0] + 123456, $after3[$rr2], $failures);
+    sync($queue, $worker, $h2, 'occupancy_daily_closed');
+    $closed3 = current_rates($model, $h2, $stay3);
+    check('8b. daily price 0 on another night == reference', expected_rates($mysql, $h2, $stay3, $today), $closed3, $failures);
+    check("   rr $rr2 not sold for 3 guests", false, isset($closed3[$rr2]), $failures);
+    check('   2 guests unchanged', $before2, current_rates($model, $h2, $stay2), $failures);
 
     // 9. дубли строк (на проде нет UNIQUE-ключей): побеждает строка с максимальным id
     $hasUnique = $mysql->fetchOne("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE()

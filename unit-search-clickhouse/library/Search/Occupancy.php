@@ -16,6 +16,7 @@ class Search_Occupancy {
     const MAX_CHILDREN = 6;                 // детей в одном номере запроса
     const MAX_ROOMS = 4;                    // номеров в одном запросе (колонки k2..k4)
     const NO_LIMIT = 255;                   // max_infants без лимита; children_min_age = 255 — отель не принимает детей
+    const CLOSED = 1099511627776;           // 2^40: цена номера за g гостей >= этого — хотя бы одна ночь закрыта на g гостей
 
     // типы детской цены (hotels_children_groups.price_type)
     const CHILD_FREE = 1;
@@ -85,7 +86,9 @@ class Search_Occupancy {
      *    или отель без детей (children_min_age = 255) — номер не подходит;
      *  - младенец (0-2 в группе) не больше max_infants; при infants_excluded он не считается в max_children / max_occupancy
      *    и не занимает место; остальные дети занимают место: детей <= max_children, взрослые + дети <= max_occupancy;
-     *  - цена номера берётся за g = число взрослых гостей; если на столько не продаётся — за ближайшее большее продаваемое g,
+     *  - g гостей продаётся, если бит g в gmask и все ночи открыты на g гостей (цена за проживание < CLOSED: дневная цена 0
+     *    закрывает ночь); цена номера берётся за g = число взрослых гостей; если на столько не продаётся — за ближайшее большее
+     *    продаваемое g,
      *    свободные места (g − взрослые) бесплатно занимают самые дорогие дети с местом; не хватает детей — номер не подходит;
      *  - ребёнок платит по типу цены своей группы от цены номера за g гостей за проживание (округление half up один раз):
      *    бесплатно / фикс × ночей / цена × % / цена / g × % / цена / g;
@@ -97,7 +100,7 @@ class Search_Occupancy {
      *   children_min_age  255 = отель не принимает детей
      *   age_group         array(возраст 0..17 => номер группы j, 0 = взрослый)
      *   child_type, child_value  array(j => тип цены группы / значение: фикс — копейки за ночь, процент — базисные пункты)
-     *   adults            array(g => цена номера за g гостей за проживание)
+     *   adults            array(g => цена номера за g гостей за проживание; >= CLOSED — закрыта хотя бы одна ночь)
      *   nights            ночей
      * @param int $adults взрослых в запросе
      * @param array $ages возраста детей
@@ -140,7 +143,7 @@ class Search_Occupancy {
         // за сколько гостей берётся цена номера: взрослые, иначе ближайшее большее продаваемое число (места займут дети)
         $g = 0;
         for($x = $a; $x <= min(self::MAX_ADULTS, $a + $placed) && !$g; $x++) {
-            $g = (($rr['gmask'] >> $x) & 1) ? $x : 0;
+            $g = self::_sold($rr, $x) ? $x : 0;
         }
         if(!$g) {
             return null;
@@ -172,8 +175,7 @@ class Search_Occupancy {
         }
         // не дороже, чем если бы платящие дети были взрослыми
         $guests = $g;
-        $capped = $paying > 0 && $g + $paying <= self::MAX_ADULTS && (($rr['gmask'] >> ($g + $paying)) & 1)
-            && $rr['adults'][$g + $paying] < $total;
+        $capped = $paying > 0 && self::_sold($rr, $g + $paying) && $rr['adults'][$g + $paying] < $total;
         if($capped) {
             $guests = $g + $paying;
             $total = (int)$rr['adults'][$guests];
@@ -290,6 +292,13 @@ class Search_Occupancy {
             self::_combine($cands, $i + 1, $picks, $used, $sum + $o['price'], $result);
             $used[$o['id_room']] = $n;
         }
+    }
+
+    /**
+     * Продаётся ли рум-рейт на g гостей на всё проживание: бит в gmask и ни одна ночь не закрыта (цена < CLOSED).
+     */
+    protected static function _sold(array $rr, $g) {
+        return $g >= 1 && $g <= self::MAX_ADULTS && (($rr['gmask'] >> $g) & 1) && isset($rr['adults'][$g]) && $rr['adults'][$g] < self::CLOSED;
     }
 
     protected static function _roundDiv($a, $b) {

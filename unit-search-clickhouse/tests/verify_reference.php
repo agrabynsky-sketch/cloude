@@ -8,7 +8,8 @@
  *   2. hotelRooms(), один номер с детьми      == эталон (id рум-рейтов, итоговая цена, цены взрослых по ночам);
  *   3. search(), один номер с детьми          == минимум эталона по каждому отелю (наборы по 40 отелей);
  *   4. search() и hotelRooms()['best'], 2-3 номера == минимум эталона полным перебором рум-рейтов с учётом наличия;
- *   5. search() с фильтрами и сортировкой по убыванию цены.
+ *   5. search() с фильтрами и сортировкой по убыванию цены;
+ *   6. проживания с ночью, закрытой дневной ценой 0 на 1 или 3 гостей: hotelRooms() и search() == эталон.
  */
 require __DIR__ . '/bootstrap.php';
 require __DIR__ . '/reference.php';
@@ -268,5 +269,55 @@ foreach($filterSets as $filters) {
 printf("5. search() with filters: %d filter sets, %d hotel minimum prices compared, mismatches: %d\n", count($filterSets), $checked, $fail);
 $failures[] = $fail;
 
-printf("nights priced from hotels_rates_occupancy_daily in the reference: %d\n", isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0);
+// ---------- 6. проживания с ночью, закрытой дневной ценой 0 (hotels_rates_occupancy_daily.price = 0 — на g гостей в эту ночь
+//               не продаётся): тот же рум-рейт и его производные должны пропасть на g гостей или посчитаться за другое число гостей
+$fail = 0;
+$checked = 0;
+$stays = 0;
+$closedRows = $mysql->fetchAll('SELECT r.id_hotel, d.guests, d.date FROM hotels_rates_occupancy_daily d
+    JOIN hotels_rates_rooms rr ON rr.id = d.id_rate_room JOIN hotels_rooms r ON r.id = rr.id_room
+    WHERE d.price = 0 AND d.guests IN (1, 3) AND d.date BETWEEN ? + INTERVAL 3 DAY AND ? + INTERVAL 300 DAY
+    ORDER BY RAND(?) LIMIT ' . max(10, (int)($cases / 5)), array($today, $today, mt_rand()));
+$byGuests = array(
+    1 => array(array(1, array()), array(1, array(8)), array(1, array(3)), array(1, array(8, 11))),
+    3 => array(array(3, array()), array(2, array(8)), array(2, array(11)), array(2, array(8, 11)), array(1, array(8, 11)), array(2, array(3))),
+);
+foreach($closedRows as $r) {
+    if(!in_array($r['id_hotel'], $hotelIds)) {
+        continue;
+    }
+    $nights = mt_rand(1, 4);
+    $checkin = date('Y-m-d', strtotime($r['date'] . ' 12:00:00 -' . mt_rand(0, $nights - 1) . ' day'));
+    foreach($byGuests[(int)$r['guests']] as $c) {
+        list($adults, $ages) = $c;
+        $stays++;
+        $expected = array();
+        foreach(referenceRooms($mysql, $r['id_hotel'], $checkin, $nights, $adults, $ages, $today) as $rrId => $v) {
+            $expected[$rrId] = $v['total'];
+        }
+        $offer = $model->hotelRooms($r['id_hotel'], array('checkin' => $checkin, 'nights' => $nights,
+            'rooms' => array(array('adults' => $adults, 'children' => $ages))));
+        $got = array();
+        foreach($offer['rooms'][0]['items'] as $item) {
+            $got[$item['id_rate_room']] = $item['price_minor'];
+        }
+        $res = $model->search(array('checkin' => $checkin, 'nights' => $nights, 'adults' => $adults, 'children' => $ages,
+            'id_hotel' => array((int)$r['id_hotel'])));
+        ksort($expected);
+        ksort($got);
+        $checked += count($expected);
+        $min = $expected ? min($expected) : null;
+        $gotMin = $res['total'] ? $res['items'][0]['price_minor'] : null;
+        if($got != $expected || $min !== $gotMin) {
+            $fail++;
+            printf("CLOSED NIGHT MISMATCH hotel=%d checkin=%s nights=%d adults=%d children=%s\n  expected: %s (min %s)\n  got:      %s (search %s)\n",
+                $r['id_hotel'], $checkin, $nights, $adults, json_encode($ages), json_encode($expected), $min, json_encode($got), $gotMin);
+        }
+    }
+}
+printf("6. stays with a night closed by daily price 0: %d stays, %d room-rate prices compared, mismatches: %d\n", $stays, $checked, $fail);
+$failures[] = $fail;
+
+printf("nights priced from hotels_rates_occupancy_daily in the reference: %d (closed for g guests by price 0: %d)\n",
+    isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0, isset($GLOBALS['referenceDailyClosed']) ? $GLOBALS['referenceDailyClosed'] : 0);
 exit(array_sum($failures) ? 1 : 0);
