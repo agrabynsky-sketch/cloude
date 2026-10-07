@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS hotels_children_groups (
   KEY idx_hotel (id_hotel)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
+-- ---------- «не дороже, чем взрослым»: считать платящих детей как взрослых, если так дешевле
+--   hotels.children_as_adults       1 (по умолчанию) — итог номера не больше цены номера за (взрослые + платящие дети) гостей,
+--                                   если на столько продаётся; 0 — дети всегда платят по детской политике, даже если цена
+--                                   за столько же взрослых ниже;
+--   hotels_rooms.children_as_adults NULL — как у отеля, 0 / 1 — своё значение для категории номера.
+CALL hotels_search_ddl('hotels', 'children_as_adults', 0,
+  'ALTER TABLE hotels ADD COLUMN children_as_adults TINYINT(1) NOT NULL DEFAULT 1
+     COMMENT ''1 = дети по цене взрослых, если так дешевле; 0 = всегда по детской политике''');
+CALL hotels_search_ddl('hotels_rooms', 'children_as_adults', 0,
+  'ALTER TABLE hotels_rooms ADD COLUMN children_as_adults TINYINT(1) NULL DEFAULT NULL
+     COMMENT ''NULL = как у отеля (hotels.children_as_adults), 0 / 1 = своё значение''');
+
 -- ---------- обновление базы с прошлой версией прототипа (на чистой базе ничего не делает)
 -- группы: цена «на существующей кровати» -> одна цена группы (1 бесплатно, 2 фикс, 3 «% от одноместной» -> 4 «% цены взрослого»);
 -- группы отдельных тарифов удаляются (политика теперь одна на отель)

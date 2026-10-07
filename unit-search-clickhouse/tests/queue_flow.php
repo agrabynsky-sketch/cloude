@@ -53,6 +53,18 @@ function current_rooms(Search_Model_Stay $model, $hotelId, array $stay, array $r
     ksort($got);
     return $got;
 }
+// рум-рейты, где платящие дети посчитаны как взрослые («не дороже, чем взрослым»): id_rate_room => id_room
+function capped_rooms(Search_Model_Stay $model, $hotelId, array $stay, array $room) {
+    $offer = $model->hotelRooms($hotelId, array('checkin' => $stay['checkin'], 'nights' => $stay['nights'], 'rooms' => array($room)));
+    $capped = array();
+    foreach($offer['rooms'][0]['items'] as $row) {
+        if($row['capped']) {
+            $capped[$row['id_rate_room']] = $row['id_room'];
+        }
+    }
+    ksort($capped);
+    return $capped;
+}
 function expected_rooms($db, $hotelId, array $stay, array $room, $today) {
     $exp = array();
     foreach(referenceRooms($db, $hotelId, $stay['checkin'], $stay['nights'], $room['adults'], $room['children'], $today) as $rrId => $v) {
@@ -348,6 +360,46 @@ try {
     $baby = array('adults' => 2, 'children' => array(1));
     check('16. max_infants = 0: 2 adults + 1 y.o. == reference (nothing)', expected_rooms($mysql, $h3, $stay, $baby, $today), current_rooms($model, $h3, $stay, $baby), $failures);
     check('    ... 2 adults + 8, 4 y.o. still == reference', expected_rooms($mysql, $h3, $stay, $kids, $today), current_rooms($model, $h3, $stay, $kids), $failures);
+
+    // 16b. «не дороже, чем взрослым» выключено у отеля (номера — как у отеля): дети всегда по детской политике
+    $caaHotel = (int)$mysql->fetchOne('SELECT children_as_adults FROM hotels WHERE id = ?', array($h3));
+    $caaRooms = $mysql->fetchPairs('SELECT id, children_as_adults FROM hotels_rooms WHERE id_hotel = ?', array($h3));
+    $undo[] = function() use ($mysql, $h3, $caaHotel, $caaRooms) {
+        $mysql->query('UPDATE hotels SET children_as_adults = ? WHERE id = ?', array($caaHotel, $h3));
+        foreach($caaRooms as $id => $v) {
+            $mysql->query('UPDATE hotels_rooms SET children_as_adults = ? WHERE id = ?', array($v, $id));
+        }
+    };
+    $mysql->query('UPDATE hotels SET children_as_adults = 1 WHERE id = ?', array($h3));
+    $mysql->query('UPDATE hotels_rooms SET children_as_adults = NULL WHERE id_hotel = ?', array($h3));
+    sync($queue, $worker, $h3, 'hotel');
+    $on = current_rooms($model, $h3, $stay, $kids);
+    $cappedOn = capped_rooms($model, $h3, $stay, $kids);
+    check('16b. children_as_adults = 1 (hotel): 2 adults + 8, 4 == reference', expected_rooms($mysql, $h3, $stay, $kids, $today), $on, $failures);
+    printf("   room-rates where the children are priced as adults: %d\n", count($cappedOn));
+    $mysql->query('UPDATE hotels SET children_as_adults = 0 WHERE id = ?', array($h3));
+    sync($queue, $worker, $h3, 'hotel');
+    $off = current_rooms($model, $h3, $stay, $kids);
+    check('    children_as_adults = 0 (hotel) == reference', expected_rooms($mysql, $h3, $stay, $kids, $today), $off, $failures);
+    check('    ... no room-rate prices children as adults', array(), capped_rooms($model, $h3, $stay, $kids), $failures);
+    $dearer = 0;
+    foreach($cappedOn as $rrId => $idRoom) {
+        $dearer += $off[$rrId] > $on[$rrId] ? 1 : 0;
+    }
+    check('    ... those room-rates are dearer now', count($cappedOn), $dearer, $failures);
+    // 16c. своё значение категории номера: 1 у одного номера при 0 у отеля — «как взрослые» только в этом номере
+    $roomOn = $cappedOn ? reset($cappedOn) : (int)$occRr['id_room'];
+    $mysql->query('UPDATE hotels_rooms SET children_as_adults = 1 WHERE id = ?', array($roomOn));
+    sync($queue, $worker, $h3, 'room');
+    check("16c. room $roomOn: children_as_adults = 1, hotel 0 == reference", expected_rooms($mysql, $h3, $stay, $kids, $today),
+        current_rooms($model, $h3, $stay, $kids), $failures);
+    $expCapped = array();
+    foreach($cappedOn as $rrId => $idRoom) {
+        if($idRoom == $roomOn) {
+            $expCapped[$rrId] = $idRoom;
+        }
+    }
+    check('    ... children as adults only in this room', $expCapped, capped_rooms($model, $h3, $stay, $kids), $failures);
 
     // 17. отель перестал принимать детей -> с детьми не находится, без детей — находится
     $mysql->query('UPDATE hotels SET allow_children = 0 WHERE id = ?', array($h3));

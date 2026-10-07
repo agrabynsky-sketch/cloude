@@ -261,11 +261,17 @@ function referenceRooms($db, $hotelId, $checkin, $nights, $adults, array $ages, 
             }
         }
         list($total, $paying) = $best;
-        // не дороже, чем если бы платящие дети были взрослыми
+        // не дороже, чем если бы платящие дети были взрослыми — если не выключено у категории номера (NULL — как у отеля)
+        $asAdultsOn = is_null($room['children_as_adults']) ? (bool)$hotel['children_as_adults'] : (bool)$room['children_as_adults'];
         if($paying > 0 && !is_null($asAdults = $stay($g + $paying))) {
             if(array_sum($asAdults) < $total) {
-                $total = array_sum($asAdults);
-                $nightly = $asAdults;
+                if($asAdultsOn) {
+                    $total = array_sum($asAdults);
+                    $nightly = $asAdults;
+                } else {
+                    // выключено: дети по детской политике, хотя по цене взрослых было бы дешевле
+                    $GLOBALS['referenceAsAdultsOff'] = (isset($GLOBALS['referenceAsAdultsOff']) ? $GLOBALS['referenceAsAdultsOff'] : 0) + 1;
+                }
             }
         }
         $result[$rrId] = array('total' => $total, 'nightly' => $nightly, 'id_room' => (int)$rr['id_room'], 'rooms_left' => $roomsLeft);

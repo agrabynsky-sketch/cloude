@@ -209,7 +209,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
                        any(max_guests) AS max_guests, any(id_currency) AS id_currency, any(gmask) AS gmask,
                        any(max_children) AS max_children, any(max_occupancy) AS max_occupancy, any(max_infants) AS max_infants,
                        any(infants_excluded) AS infants_excluded, any(children_min_age) AS children_min_age,
-                       any(extra_beds) AS extra_beds, any(cots) AS cots, any(cots_and_extra_beds) AS cots_and_extra_beds,
+                       any(children_as_adults) AS children_as_adults, any(extra_beds) AS extra_beds, any(cots) AS cots, any(cots_and_extra_beds) AS cots_and_extra_beds,
                        arrayStringConcat(any(age_group), ',') AS age_group,
                        arrayStringConcat(any(child_type), ',') AS child_type,
                        arrayStringConcat(any(child_value), ',') AS child_value,
@@ -225,7 +225,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
             $rr = array();
             foreach(array('id_rate_room', 'id_room', 'id_rate', 'id_parent', 'id_board_type', 'id_cancel_policy', 'refundable', 'id_room_type',
                         'base_occupancy', 'max_guests', 'id_currency', 'rooms_left', 'gmask', 'max_children', 'max_occupancy', 'max_infants',
-                        'infants_excluded', 'children_min_age', 'extra_beds', 'cots', 'cots_and_extra_beds') as $f) {
+                        'infants_excluded', 'children_min_age', 'children_as_adults', 'extra_beds', 'cots', 'cots_and_extra_beds') as $f) {
                 $rr[$f] = (int)$row[$f];
             }
             $rr['nights'] = $n;
@@ -373,7 +373,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
         }
         if($hasKids) {
             $cols[] = 'any(s.max_children) AS mch, any(s.max_occupancy) AS mocc, any(s.max_infants) AS minf,
-                       any(s.infants_excluded) AS infx, any(s.children_min_age) AS mage,
+                       any(s.infants_excluded) AS infx, any(s.children_min_age) AS mage, any(s.children_as_adults) AS caa,
                        any(s.age_group) AS ag, any(s.child_type) AS ct, any(s.child_value) AS cv';
         }
         $rateRooms = "SELECT s.id_hotel AS id_hotel, s.id_rate_room AS id_rate_room,
@@ -418,7 +418,8 @@ class Search_Model_Stay extends Search_Model_Abstract {
         // Итог считается вложенными лямбдами: значения передаются параметрами ([x])[1] — «let». Цепочки алиасов
         // (total -> t0 -> cov -> kp -> g) ClickHouse при разборе раскрывает многократно: такой запрос разбирался 0,5 с.
         //   kp — цены детей от цены номера за gd гостей; cov — самые дорогие дети с местом на свободных местах цены (бесплатно);
-        //   итог — не дороже, чем цена номера за gd + платящих детей (если на столько продаётся).
+        //   итог — не дороже, чем цена номера за gd + платящих детей (если на столько продаётся и children_as_adults = 1:
+        //   при 0 в лямбду вместо gmask идёт 0 — правило не срабатывает).
         return "WITH kid.2 AS age, ag[age + 1] AS grp, (age < 255 AND grp > 0) AS ch,
                      (ch AND age <= $infant) AS infant, (ch AND NOT (infant AND infx = 1)) AS pl
                 SELECT id_hotel, id_rate_room, kid.1 AS i,
@@ -438,7 +439,7 @@ class Search_Model_Stay extends Search_Model_Abstract {
                            [arraySlice(arrayReverseSort(arrayFilter((p, x) -> x.3, kp, kv_)), 1, gd - a2)])[1],
                          [arrayMap(x -> multiIf(x.1 = 2, toInt64(x.2) * $n, x.1 = 3, intDiv($pr * x.2 + 5000, 10000),
                              x.1 = 4, intDiv($pr * x.2 + 5000 * gd, 10000 * gd), x.1 = 5, intDiv($pr + intDiv(gd, 2), gd), toInt64(0)), kv_)])[1],
-                       [greatest(g, 1)], [a2x], [gmk], [pa], [kv])[1] AS total
+                       [greatest(g, 1)], [a2x], [if(any(caa) = 1, gmk, toUInt16(0))], [pa], [kv])[1] AS total
                 FROM ($rateRooms)
                 ARRAY JOIN [" . implode(', ', $kids) . "] AS kid
                 GROUP BY id_hotel, id_rate_room, i

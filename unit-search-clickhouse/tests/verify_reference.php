@@ -320,4 +320,6 @@ $failures[] = $fail;
 
 printf("nights priced from hotels_rates_occupancy_daily in the reference: %d (closed for g guests by price 0: %d)\n",
     isset($GLOBALS['referenceDailyHits']) ? $GLOBALS['referenceDailyHits'] : 0, isset($GLOBALS['referenceDailyClosed']) ? $GLOBALS['referenceDailyClosed'] : 0);
+printf("room-rate prices where children_as_adults = 0 kept the children policy price (as adults would be cheaper): %d\n",
+    isset($GLOBALS['referenceAsAdultsOff']) ? $GLOBALS['referenceAsAdultsOff'] : 0);
 exit(array_sum($failures) ? 1 : 0);

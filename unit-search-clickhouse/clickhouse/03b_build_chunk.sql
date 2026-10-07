@@ -12,7 +12,7 @@ INSERT INTO unit_search.hotels_search_stay_new
      id_board_type, id_cancel_policy, refundable, channel_mask, is_public, id_access_group,
      id_room_type, base_occupancy, max_guests, gmask,
      max_children, max_occupancy, max_infants, infants_excluded, children_min_age, age_group, child_type, child_value,
-     extra_beds, cots, cots_and_extra_beds,
+     children_as_adults, extra_beds, cots, cots_and_extra_beds,
      c1, c2, c3, c4, c5, c6, c7, c8, k, k2, k3, k4,
      avail, cta, ctd, min_los, max_los, min_adv, max_adv, ver, is_deleted)
 SELECT
@@ -21,7 +21,7 @@ SELECT
     id_board_type, id_cancel_policy, refundable, channel_mask, is_public, id_access_group,
     id_room_type, base_occupancy, max_guests, gmask,
     max_children, max_occupancy, max_infants, infants_excluded, children_min_age, age_group, child_type, child_value,
-    extra_beds, cots, cots_and_extra_beds,
+    children_as_adults, extra_beds, cots, cots_and_extra_beds,
     toUInt64(sum(if(sell, gp[1], 0)) OVER w) AS c1,
     toUInt64(sum(if(sell, gp[2], 0)) OVER w) AS c2,
     toUInt64(sum(if(sell, gp[3], 0)) OVER w) AS c3,
@@ -49,7 +49,7 @@ FROM
         g.id_room_type AS id_room_type, g.base_occupancy AS base_occupancy, g.max_guests AS max_guests, g.gmask AS gmask,
         g.max_children AS max_children, g.max_occupancy AS max_occupancy, g.max_infants AS max_infants,
         g.infants_excluded AS infants_excluded, g.children_min_age AS children_min_age,
-        g.age_group AS age_group, g.child_type AS child_type, g.child_value AS child_value,
+        g.age_group AS age_group, g.child_type AS child_type, g.child_value AS child_value, g.children_as_adults AS children_as_adults,
         g.extra_beds AS extra_beds, g.cots AS cots, g.cots_and_extra_beds AS cots_and_extra_beds,
         -- база родителя за ночь (только когда цена производного считается от родителя, а не своя цена ночи) и процент изменения
         if(g.id_parent > 0 AND NOT (p.id_rate_room IS NOT NULL AND (p.active = 0 OR (p.price IS NOT NULL AND p.derive_type = 0)))

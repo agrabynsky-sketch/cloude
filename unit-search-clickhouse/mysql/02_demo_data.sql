@@ -21,9 +21,12 @@
 --   hotels_rates_occupancy_daily цены за 1 и 3 гостей на ~8% ночей у тех же рум-рейтов
 --                               (~2% строк с price = 0 — "на g гостей в эту ночь не продаётся", и строки для выключенного числа гостей)
 --   вместимость и дети (нужен mysql/01b_occupancy_children.sql):
---     hotels                        ~2.5% отелей не принимают детей, ~8% — с 3 лет
+--     hotels                        ~2.5% отелей не принимают детей, ~8% — с 3 лет; у 20% отелей «не дороже, чем взрослым»
+--                                   выключено (children_as_adults = 0)
 --     hotels_rooms                  max_adults / max_children / max_occupancy (только существующие места) / max_infants /
---                                   is_without_infants / extra_beds / cots / cots_and_extra_beds по типу номера
+--                                   is_without_infants / extra_beds / cots / cots_and_extra_beds по типу номера;
+--                                   children_as_adults: у Triple в отелях с выключенным правилом — 1 (своё значение номера),
+--                                   у Family в каждом 7-м отеле — 0, у остальных NULL (как у отеля)
 --     hotels_children_groups        4 варианта детской политики отеля со всеми 5 типами цены (у ~10% отелей групп нет —
 --                                   дети считаются взрослыми), немного неактивных групп
 --
@@ -91,7 +94,7 @@ BEGIN
 
   -- ---------- hotels
   INSERT INTO hotels (id, title, stars, stars_title, id_country, id_region, id_city, id_type, id_currency,
-                      lat, lng, timezone, check_in_from, check_out_to, allow_children, children_min_age,
+                      lat, lng, timezone, check_in_from, check_out_to, allow_children, children_min_age, children_as_adults,
                       active, tax_included, fee_included, week_start_dow)
   SELECT v_hb + s.n,
          CONCAT('Demo ', ELT(1 + s.n % 10, 'Grand', 'Park', 'Royal', 'Sea View', 'Palace', 'Garden', 'City', 'Resort', 'Plaza', 'Boutique'),
@@ -104,6 +107,7 @@ BEGIN
          IF(s.n <= p_hotels / 2, 'Europe/Kiev', 'Europe/Istanbul'), '14:00', '12:00',
          IF(s.n % 40 = 0, 0, 1),                                             -- ~2.5% adults only
          IF(s.n % 12 = 5, 3, 0),                                             -- ~8% children from 3 years
+         IF(s.n % 5 = 2, 0, 1),                                              -- 20%: children never priced as adults
          1, 1, 1, 1
   FROM hotels_search_demo_seq s WHERE s.n BETWEEN 1 AND p_hotels;
 
@@ -116,7 +120,7 @@ BEGIN
   --   Junior Suite  Queen + Single    2    3              2           2             NULL or 0    no               2 / 1, and
   INSERT INTO hotels_rooms (id, title, internal_name, id_hotel, id_type, allotment, square, base_occupancy, max_occupancy,
                             max_adults, max_children, is_without_infants, floor, active, data,
-                            max_infants, extra_beds, cots, cots_and_extra_beds)
+                            max_infants, extra_beds, cots, cots_and_extra_beds, children_as_adults)
   SELECT v_rb + (h.n - 1) * 5 + r.n,
          ELT(r.n, 'Standard Double Room', 'Standard Twin Room', 'Triple Room', 'Family Room', 'Junior Suite'),
          CONCAT('demo-', h.n, '-', r.n),
@@ -136,7 +140,8 @@ BEGIN
          IF(r.n = 5, IF(h.n % 4 = 0, 0, NULL), ELT(r.n, 1, 1, 1, 2, 1)),
          ELT(r.n, 1, 1, 1, 1, 2),
          ELT(r.n, 1, 1, 1, 2, 1),
-         ELT(r.n, 0, 1, 0, 1, 1)
+         ELT(r.n, 0, 1, 0, 1, 1),
+         CASE WHEN r.n = 3 AND h.n % 5 = 2 THEN 1 WHEN r.n = 4 AND h.n % 7 = 3 THEN 0 END   -- room overrides, NULL = hotel
   FROM hotels_search_demo_seq h JOIN hotels_search_demo_seq r
   WHERE h.n BETWEEN 1 AND p_hotels AND r.n BETWEEN 1 AND 3 + h.n % 3;
 

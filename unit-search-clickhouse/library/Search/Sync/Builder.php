@@ -40,6 +40,8 @@
  *   при пересечении групп побеждает больший id, 0 = взрослый; child_type[j] = price_type (1..5), child_value[j] =
  *   price_value × 100 (фикс — копейки за ночь, процент — базисные пункты). Цену ребёнка считает поиск из цены номера.
  *   children_min_age: 255 = отель не принимает детей.
+ *   children_as_adults («не дороже, чем взрослым»): hotels_rooms.children_as_adults, NULL -> hotels.children_as_adults
+ *   (1 — платящие дети по цене взрослых, если так дешевле; 0 — всегда по детской политике).
  *  Ограничения даты (из своей строки цены рум-рейта, иначе из тарифа):
  *   min_los = своя min_los, если не NULL, иначе hotels_rates.min_los; < 1 -> 1;  max_los: >0 или 999;
  *   min_adv = своя min_adv, если не NULL, иначе hotels_rates.min_adv;          max_adv: >0 или 9999;
@@ -81,7 +83,7 @@ class Search_Sync_Builder {
         'id_board_type', 'id_cancel_policy', 'refundable', 'channel_mask', 'is_public', 'id_access_group',
         'id_room_type', 'base_occupancy', 'max_guests', 'gmask',
         'max_children', 'max_occupancy', 'max_infants', 'infants_excluded', 'children_min_age', 'age_group', 'child_type', 'child_value',
-        'extra_beds', 'cots', 'cots_and_extra_beds',
+        'children_as_adults', 'extra_beds', 'cots', 'cots_and_extra_beds',
         'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'k', 'k2', 'k3', 'k4',
         'avail', 'cta', 'ctd', 'min_los', 'max_los', 'min_adv', 'max_adv',
         'ver', 'is_deleted',
@@ -130,14 +132,15 @@ class Search_Sync_Builder {
         $db = $this->_db;
         $end = date('Y-m-d', strtotime($this->_start . ' 12:00:00') + self::HORIZON_DAYS * 86400);
 
-        $hotels = $this->_assoc($db->fetchAll('SELECT id, stars, id_country, id_region, id_city, id_currency, allow_children, children_min_age
+        $hotels = $this->_assoc($db->fetchAll('SELECT id, stars, id_country, id_region, id_city, id_currency, allow_children, children_min_age,
+            children_as_adults
             FROM hotels WHERE active = 1 AND id IN (' . implode(',', $hotelIds) . ')'));
         if(empty($hotels)) {
             return $built;
         }
         $hotelList = implode(',', array_keys($hotels));
         $rooms = $this->_assoc($db->fetchAll('SELECT id, id_hotel, id_type, allotment, base_occupancy, max_occupancy, max_adults, max_children,
-            max_infants, is_without_infants, extra_beds, cots, cots_and_extra_beds
+            max_infants, is_without_infants, extra_beds, cots, cots_and_extra_beds, children_as_adults
             FROM hotels_rooms WHERE active = 1 AND id_hotel IN (' . $hotelList . ')'));
         $rates = $this->_assoc($db->fetchAll('SELECT id, id_hotel, id_parent, id_board_type, id_cancel_policy, min_los, min_adv,
             derive_value, channel_mask, visibility, access_group_id
@@ -263,6 +266,7 @@ class Search_Sync_Builder {
                 min(255, max(0, (int)$room['max_children'])), min(255, $maxOccupancy),
                 is_null($room['max_infants']) ? self::NO_LIMIT : min(254, max(0, (int)$room['max_infants'])),
                 $room['is_without_infants'] ? 1 : 0, $policies[$room['id_hotel']],
+                (is_null($room['children_as_adults']) ? (is_null($hotel['children_as_adults']) || $hotel['children_as_adults']) : $room['children_as_adults']) ? 1 : 0,
                 min(255, max(0, (int)$room['extra_beds'])), min(255, max(0, (int)$room['cots'])), $room['cots_and_extra_beds'] ? 1 : 0,
             );
             $staticTsv = implode("\t", $static);

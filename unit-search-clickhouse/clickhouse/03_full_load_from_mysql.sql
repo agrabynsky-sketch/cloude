@@ -21,13 +21,13 @@ SET max_bytes_before_external_group_by = 1000000000;
 -- ---------- 1. staging: копии нужных таблиц MySQL (только активные записи и только даты горизонта)
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_hotels;
 CREATE TABLE unit_search.hotels_search_stg_hotels ENGINE = Memory AS
-SELECT id, stars, id_country, id_region, id_city, id_currency, allow_children, children_min_age
+SELECT id, stars, id_country, id_region, id_city, id_currency, allow_children, children_min_age, children_as_adults
 FROM mysql(unit_mysql, table = 'hotels') WHERE active = 1;
 
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_rooms;
 CREATE TABLE unit_search.hotels_search_stg_rooms ENGINE = Memory AS
 SELECT id, id_hotel, id_type, allotment, base_occupancy, max_occupancy, max_adults, max_children, max_infants, is_without_infants,
-       extra_beds, cots, cots_and_extra_beds
+       extra_beds, cots, cots_and_extra_beds, children_as_adults
 FROM mysql(unit_mysql, table = 'hotels_rooms') WHERE active = 1;
 
 DROP TABLE IF EXISTS unit_search.hotels_search_stg_rates;
@@ -164,6 +164,8 @@ SELECT
         range(18)) AS age_group,
     arrayMap(x -> x.4, hc.grp) AS child_type,
     arrayMap(x -> x.5, hc.grp) AS child_value,
+    -- «не дороже, чем взрослым»: своё значение номера, NULL — как у отеля
+    toUInt8(ifNull(ro.children_as_adults, ifNull(h.children_as_adults, 1)) != 0) AS children_as_adults,
     toUInt8(least(255, greatest(0, ifNull(ro.extra_beds, 0)))) AS extra_beds,
     toUInt8(least(255, greatest(0, ifNull(ro.cots, 0)))) AS cots,
     toUInt8(ifNull(ro.cots_and_extra_beds, 0) != 0) AS cots_and_extra_beds
