@@ -170,7 +170,8 @@ def _decode_stream(body, filters, ctx):
 def validate_pdf(data, ctx):
     if not re.match(rb"%PDF-[12]\.\d", data[:8]):
         ctx.fail("content_mismatch", "Content is not a PDF document")
-    if b"%%EOF" not in data[-2048:]:
+    # Only whitespace may follow the final %%EOF: nothing can ride along after it.
+    if not data.rstrip(b" \t\r\n\f\x00").endswith(b"%%EOF"):
         ctx.fail("invalid_pdf", "PDF is truncated or has data appended after its end")
 
     _check_names(data, ctx, DANGEROUS_NAMES)

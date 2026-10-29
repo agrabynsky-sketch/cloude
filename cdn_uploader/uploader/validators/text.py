@@ -14,8 +14,10 @@ from .common import looks_executable
 
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f]")
 MARKUP_RE = re.compile(
-    r"<\s*/?\s*(script|iframe|frame|object|embed|applet|svg|math|html|body|head|meta|link"
-    r"|style|base|form|img|video|audio|xml|xsl)\b"
+    r"<\s*/?\s*(script|iframe|frame|frameset|object|embed|applet|svg|math|html|body|head"
+    r"|meta|link|style|base|form|input|button|textarea|select|img|image|video|audio|source"
+    r"|xml|xsl|a|div|span|table|template|marquee|details|noscript|portal|title)\b"
+    r"|<[a-z][\w:-]*\s[^<>]*\bon[a-z]+\s*="       # event handler in any tag
     r"|<\?(php|=)|<%|\b(java|vb)script\s*:|data\s*:\s*text/html",
     re.I,
 )

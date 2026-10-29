@@ -37,7 +37,9 @@ class Limits:
     image_max_pixels: int = 40_000_000
     image_max_side: int = 20_000
     image_max_frames: int = 300
-    image_max_total_pixels: int = 400_000_000
+    # Sum over all frames. Animated frames are held decoded (RGBA) while
+    # re-encoding, so this bounds memory: 40M px is ~160 MB.
+    image_max_total_pixels: int = 40_000_000
     office_max_entries: int = 5000
     jpeg_quality: int = 90
 

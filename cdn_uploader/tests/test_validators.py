@@ -409,3 +409,135 @@ def test_gzip_bomb_rejected():
 def test_base64_wrapped_payload_is_just_text():
     # Encoded content is inert text; nothing decodes it on the CDN side.
     assert ok("a.txt", base64.b64encode(b"<script>alert(1)</script>"))
+
+
+# ---- regressions from the adversarial review ---------------------------------
+
+def _timed(fn):
+    import time
+    started = time.perf_counter()
+    try:
+        fn()
+    except ValidationError:
+        pass
+    return time.perf_counter() - started
+
+
+def test_xlsx_unterminated_formula_tags_are_linear():
+    # 200 KB of "<f>" took 85 s with a lazy (.*?) regex.
+    sheet = b'<?xml version="1.0"?><worksheet><sheetData>' + b"<f>" * 70_000 + b"</sheetData></worksheet>"
+    data = samples.zip_of([
+        ("[Content_Types].xml", samples.content_types(samples.CT_XLSX, part="/xl/workbook.xml")),
+        ("_rels/.rels", samples.RELS_ROOT.replace("word/document.xml", "xl/workbook.xml")),
+        ("xl/workbook.xml", '<?xml version="1.0"?><workbook/>'),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ])
+    assert _timed(lambda: ok("a.xlsx", data)) < 2
+
+
+def test_docx_unterminated_instr_tags_are_linear():
+    body = "<w:instrText>" * 70_000
+    assert _timed(lambda: ok("a.docx", samples.docx(body=body))) < 2
+
+
+def _renamed_main_part(body, part="word/document.bin", prolog=""):
+    document = (
+        '<?xml version="1.0" encoding="UTF-8"?>' + prolog +
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    return samples.zip_of([
+        ("[Content_Types].xml", samples.content_types(samples.CT_DOCX, part="/" + part)),
+        ("_rels/.rels", samples.RELS_ROOT.replace("word/document.xml", part)),
+        (part, document),
+    ])
+
+
+DDE_FIELD = '<w:p><w:r><w:instrText> DDEAUTO c:\\\\windows\\\\system32\\\\cmd.exe "/c calc" </w:instrText></w:r></w:p>'
+
+
+def test_dde_in_renamed_main_part_rejected():
+    # Readers find the part through the relationship, whatever its name.
+    assert rejected("a.docx", _renamed_main_part(DDE_FIELD)) == "active_content"
+
+
+def test_doctype_in_renamed_part_rejected():
+    data = _renamed_main_part("<w:p/>", prolog='<!DOCTYPE d [<!ENTITY x "y">]>')
+    assert rejected("a.docx", data) == "active_content"
+
+
+def test_dde_formula_in_moved_worksheet_rejected():
+    data = samples.xlsx("cmd|' /C calc'!A0")
+    entries = [(i.filename, zipfile.ZipFile(io.BytesIO(data)).read(i))
+               for i in zipfile.ZipFile(io.BytesIO(data)).infolist()]
+    entries = [("xl/data1.xml" if n == "xl/worksheets/sheet1.xml" else n, d) for n, d in entries]
+    assert rejected("a.xlsx", samples.zip_of(entries)) == "active_content"
+
+
+@pytest.mark.parametrize("formula", [
+    "1&lt;2+cmd|' /C calc'!A0",              # an escaped "<" must not end the formula early
+    "<![CDATA[cmd|' /C calc'!A0]]>",          # CDATA is text to an XML parser
+    "cmd<!-- x -->|' /C calc'!A0",            # so is text around a comment
+])
+def test_dde_formula_obfuscations_rejected(formula):
+    assert rejected("a.xlsx", samples.xlsx(formula)) == "active_content"
+
+
+def test_dde_defined_name_rejected():
+    data = samples.xlsx()
+    entries = [(i.filename, zipfile.ZipFile(io.BytesIO(data)).read(i))
+               for i in zipfile.ZipFile(io.BytesIO(data)).infolist()]
+    entries = [(n, b'<?xml version="1.0"?><workbook><definedNames><definedName name="x">'
+                   b"cmd|' /C calc'!A0</definedName></definedNames></workbook>"
+                if n == "xl/workbook.xml" else d) for n, d in entries]
+    assert rejected("a.xlsx", samples.zip_of(entries)) == "active_content"
+
+
+def test_dde_field_split_by_comment_rejected():
+    body = '<w:p><w:r><w:instrText>DDE<!-- -->AUTO cmd.exe "/c calc"</w:instrText></w:r></w:p>'
+    assert rejected("a.docx", samples.docx(body=body)) == "active_content"
+
+
+def test_unterminated_comment_rejected():
+    assert rejected("a.docx", samples.docx(body="<w:p/><!-- never closed")) == "invalid_document"
+
+
+def test_embedded_workbook_checked_recursively():
+    clean = samples.docx(extra=[("word/embeddings/Microsoft_Excel_Worksheet.xlsx", samples.xlsx())])
+    assert ok("a.docx", clean)
+    evil = samples.docx(extra=[("word/embeddings/Microsoft_Excel_Worksheet.xlsx",
+                                samples.xlsx("cmd|' /C calc'!A0"))])
+    assert rejected("a.docx", evil) == "active_content"
+
+
+@pytest.mark.parametrize("name", ["word/embeddings/package.docm", "word/media/image1.png", "word/x.bin"])
+def test_embedded_package_anywhere_rejected(name):
+    package = samples.docx(extra=[("word/vbaProject.bin", b"x")])
+    assert rejected("a.docx", samples.docx(extra=[(name, package)])) == "active_content"
+
+
+def test_odf_event_listener_with_rebound_prefix_rejected():
+    content = ('<office:document-content><office:event-listeners><s:event-listener '
+               'xmlns:s="urn:oasis:names:tc:opendocument:xmlns:script:1.0" s:event-name="dom:load"/>'
+               '</office:event-listeners></office:document-content>')
+    assert rejected("a.odt", samples.odt(content=content)) == "active_content"
+
+
+def test_animated_gif_memory_bomb_rejected_before_decoding():
+    frames = [Image.new("P", (1200, 1200), i % 2) for i in range(40)]
+    out = io.BytesIO()
+    frames[0].save(out, "GIF", save_all=True, append_images=frames[1:], duration=20)
+    assert len(out.getvalue()) < 200_000
+    assert _timed(lambda: ok("a.gif", out.getvalue())) < 1
+    assert rejected("a.gif", out.getvalue()) == "image_too_large"
+
+
+def test_pdf_with_small_appended_payload_rejected():
+    assert rejected("a.pdf", samples.pdf() + b"<script>alert(1)</script>") == "invalid_pdf"
+    assert ok("a.pdf", samples.pdf() + b"\r\n\x00\x00  ")
+
+
+@pytest.mark.parametrize("text", [b'<div onclick="alert(1)">x</div>', b'<a href="http://x">x</a>',
+                                  b"<b onmouseover=alert(1)>x</b>", b"<input autofocus>"])
+def test_text_with_more_html_rejected(text):
+    assert rejected("a.txt", text) == "active_content"
