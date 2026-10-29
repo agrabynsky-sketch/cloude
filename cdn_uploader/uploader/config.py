@@ -8,11 +8,12 @@ import shutil
 import threading
 import time
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
-from .tokens import ACCESS_LEVELS, CLIENT_ID_RE, ORIGIN_RE
+from .tokens import ACCESS_LEVELS, CLIENT_ID_RE, ORIGIN_RE, SITE_ID_RE
 from .validators import Limits, VideoSettings
 from .validators.common import MB
 
@@ -28,6 +29,22 @@ class ConfigError(Exception):
     pass
 
 
+# Settings a site may override; "" = take the client's value.
+SITE_OPTIONS = ("default_access", "corp", "cdn_base_url", "protected_base_url")
+
+
+@dataclass(frozen=True)
+class Site:
+    """One white-label site of a shared client: its domains, and optionally its
+    own file domain. Protected files uploaded on it open only on it."""
+    id: str
+    origins: tuple
+    default_access: str = ""
+    corp: str = ""
+    cdn_base_url: str = ""
+    protected_base_url: str = ""
+
+
 @dataclass(frozen=True)
 class Client:
     secret: str
@@ -36,22 +53,50 @@ class Client:
     corp: str = ""                   # Cross-Origin-Resource-Policy of protected files ("" = default)
     cdn_base_url: str = ""           # own domain for public files, e.g. https://files.partner.com/f
     protected_base_url: str = ""     # own domain for signed/private files
+    sites: tuple = ()                # Site, for one client shared by many white-label sites
+
+    @cached_property
+    def _index(self):
+        exact, patterns = {}, []
+        for site in (None,) + self.sites:
+            for origin in (self.origins if site is None else site.origins):
+                m = ORIGIN_PATTERN_RE.match(origin)
+                if m:
+                    patterns.append((m.group(1), m.group(2), m.group(3) or "", site))
+                else:
+                    exact[origin] = site
+        patterns.sort(key=lambda p: -len(p[1]))  # the most specific pattern wins
+        return exact, patterns
+
+    def _owner(self, origin):
+        """(allowed, site) for `origin`; site None = the client's own origins."""
+        if not isinstance(origin, str) or not ORIGIN_RE.match(origin):
+            return False, None
+        origin = origin.lower()
+        exact, patterns = self._index
+        if origin in exact:
+            return True, exact[origin]
+        scheme, _, rest = origin.partition("://")
+        host, _, port = rest.partition(":")
+        for p_scheme, domain, p_port, site in patterns:
+            if p_scheme == scheme and p_port == (":" + port if port else "") and host.endswith("." + domain):
+                return True, site
+        return False, None
 
     def allows(self, origin):
         """Is `origin` one of this client's sites (exactly or through a *. pattern)?"""
-        if not isinstance(origin, str) or not ORIGIN_RE.match(origin):
-            return False
-        origin = origin.lower()
-        if origin in self.origins:
-            return True
-        scheme, _, rest = origin.partition("://")
-        host, _, port = rest.partition(":")
-        for pattern in self.origins:
-            m = ORIGIN_PATTERN_RE.match(pattern)
-            if m and m.group(1) == scheme and (m.group(3) or "") == (":" + port if port else "") \
-                    and host.endswith("." + m.group(2)):
-                return True
-        return False
+        return self._owner(origin)[0]
+
+    def site_of(self, origin):
+        """The Site `origin` belongs to, or None (the client's own origins)."""
+        return self._owner(origin)[1]
+
+    def option(self, site_id, name):
+        """A setting for files of `site_id`: the site's own value, else the client's."""
+        for site in self.sites:
+            if site.id == site_id and getattr(site, name):
+                return getattr(site, name)
+        return getattr(self, name)
 
 
 class ClientRegistry:
@@ -144,6 +189,66 @@ def _bool(env, name, default):
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _origins(spec, where):
+    origins = spec.get("origins", [])
+    if not isinstance(origins, list) or any(
+            not isinstance(o, str) or not (ORIGIN_RE.match(o) or ORIGIN_PATTERN_RE.match(o.lower()))
+            for o in origins):
+        raise ConfigError(f"{where}: origins must be like https://app.example.com or https://*.example.com")
+    return tuple(o.lower() for o in origins)
+
+
+def _options(spec, where):
+    """default_access, corp and the base URLs, validated; missing ones are ""."""
+    out = {name: spec.get(name, "") for name in SITE_OPTIONS}
+    if not all(isinstance(v, str) for v in out.values()):
+        raise ConfigError(f"{where}: {', '.join(SITE_OPTIONS)} must be strings")
+    if out["default_access"] and out["default_access"] not in ACCESS_LEVELS:
+        raise ConfigError(f"{where}: default_access must be one of {ACCESS_LEVELS}")
+    if out["corp"] and out["corp"] not in CORP_VALUES:
+        raise ConfigError(f"{where}: corp must be one of {CORP_VALUES}")
+    for name in ("cdn_base_url", "protected_base_url"):
+        out[name] = out[name].rstrip("/")
+        if out[name] and not re.match(r"^https?://[a-z0-9.-]+(:\d{1,5})?(/[a-z0-9_./-]*)?$", out[name]):
+            raise ConfigError(f"{where}: {name} must be like https://files.example.com/f")
+    return out
+
+
+def _load_client(cid, spec):
+    if not CLIENT_ID_RE.match(cid):
+        raise ConfigError(f"Client id {cid!r} must match {CLIENT_ID_RE.pattern}")
+    if not isinstance(spec, dict):
+        raise ConfigError(f"Client {cid!r} must be a JSON object")
+    secret = spec.get("secret", "")
+    if not isinstance(secret, str) or len(secret) < 32:
+        raise ConfigError(f"Client {cid!r}: secret must be at least 32 characters")
+    where = f"Client {cid!r}"
+    origins, options = _origins(spec, where), _options(spec, where)
+    sites_spec = spec.get("sites", {})
+    if not isinstance(sites_spec, dict):
+        raise ConfigError(f"{where}: sites must be a JSON object")
+    sites = []
+    for sid, site_spec in sites_spec.items():
+        site_where = f"{where}, site {sid!r}"
+        if not isinstance(sid, str) or not SITE_ID_RE.match(sid):
+            raise ConfigError(f"{site_where}: site id must match {SITE_ID_RE.pattern}")
+        if not isinstance(site_spec, dict):
+            raise ConfigError(f"{site_where} must be a JSON object")
+        site_origins = _origins(site_spec, site_where)
+        if not site_origins:
+            raise ConfigError(f"{site_where}: origins are required")
+        sites.append(Site(id=sid, origins=site_origins, **_options(site_spec, site_where)))
+    every = list(origins) + [o for site in sites for o in site.origins]
+    if not every:
+        raise ConfigError(f"{where}: origins (or sites) are required")
+    duplicates = sorted({o for o in every if every.count(o) > 1})
+    if duplicates:
+        # Each origin must belong to exactly one site, or files could open on the wrong one.
+        raise ConfigError(f"{where}: {', '.join(duplicates)} listed more than once")
+    options["default_access"] = options["default_access"] or "public"
+    return Client(secret=secret, origins=origins, sites=tuple(sites), **options)
+
+
 def _load_clients(env):
     raw = env.get("UPLOADER_CLIENTS")
     path = env.get("UPLOADER_CLIENTS_FILE")
@@ -157,29 +262,7 @@ def _load_clients(env):
         raise ConfigError(f"UPLOADER_CLIENTS is not valid JSON: {exc}") from None
     if not isinstance(data, dict):
         raise ConfigError("UPLOADER_CLIENTS must be a JSON object")
-    clients = {}
-    for cid, spec in data.items():
-        secret = spec.get("secret", "")
-        origins = tuple(o.lower() for o in spec.get("origins", ()) if isinstance(o, str))
-        access = spec.get("default_access", "public")
-        corp = spec.get("corp", "")
-        bases = {k: spec.get(k, "").rstrip("/") for k in ("cdn_base_url", "protected_base_url")}
-        if not CLIENT_ID_RE.match(cid):
-            raise ConfigError(f"Client id {cid!r} must match {CLIENT_ID_RE.pattern}")
-        if access not in ACCESS_LEVELS:
-            raise ConfigError(f"Client {cid!r}: default_access must be one of {ACCESS_LEVELS}")
-        if corp and corp not in CORP_VALUES:
-            raise ConfigError(f"Client {cid!r}: corp must be one of {CORP_VALUES}")
-        if len(secret) < 32:
-            raise ConfigError(f"Client {cid!r}: secret must be at least 32 characters")
-        if not origins or any(not (ORIGIN_RE.match(o) or ORIGIN_PATTERN_RE.match(o)) for o in origins):
-            raise ConfigError(f"Client {cid!r}: origins must be like https://app.example.com "
-                              "or https://*.example.com")
-        for name, url in bases.items():
-            if url and not re.match(r"^https?://[a-z0-9.-]+(:\d{1,5})?(/[a-z0-9_./-]*)?$", url):
-                raise ConfigError(f"Client {cid!r}: {name} must be like https://files.example.com/f")
-        clients[cid] = Client(secret=secret, origins=origins, default_access=access, corp=corp, **bases)
-    return clients
+    return {cid: _load_client(cid, spec) for cid, spec in data.items()}
 
 
 def _load_video(env):

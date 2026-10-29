@@ -6,12 +6,15 @@ Every stored file has a key, which is what an application keeps in its database:
     s/<client>/ab/cd/<hash>.<ext> "signed": only through a temporary signed link
     p/<client>/ab/cd/<hash>.<ext> "private": only with a read token of that client
 
+Protected files uploaded on a white-label site of a shared client go to
+<s|p>/<client>.<site>/... and open only on that site.
+
 With a folder and/or image sizes the layout is <folder>/<size>/<path>/<hash>.<ext>,
 "orig" being the original, e.g. f/rooms/orig/ab/cd/<hash>.jpg and
 f/rooms/small/ab/cd/<hash>.jpg; <path> is the hash shard unless the token
 gives one (e.g. "10/10991"). All sizes of one upload share the same name.
 
-hash = HMAC-SHA256(UPLOADER_HASH_KEY, [access + client +] [layout +] sanitized
+hash = HMAC-SHA256(UPLOADER_HASH_KEY, [access + client[.site] +] [layout +] sanitized
 bytes). The key makes names unguessable even for someone who has a copy of
 the file, while identical uploads with the same settings still deduplicate;
 the size settings are part of it, so "small" never means two different things. Protected files live in their
@@ -32,9 +35,14 @@ from .validators import FILE_TYPES
 
 _EXT_PATTERN = "|".join(re.escape(e) for e in sorted(FILE_TYPES, key=len, reverse=True))
 KEY_RE = re.compile(
-    rf"^(?:f|[sp]/[a-z0-9][a-z0-9_-]{{0,31}})/(?:[a-z0-9][a-z0-9_-]{{0,63}}/){{1,10}}[0-9a-f]{{64}}"
+    rf"^(?:f|[sp]/[a-z0-9][a-z0-9_-]{{0,31}}(?:\.[a-z0-9][a-z0-9_-]{{0,31}})?)/"
+    rf"(?:[a-z0-9][a-z0-9_-]{{0,63}}/){{1,10}}[0-9a-f]{{64}}"
     rf"\.(?:{_EXT_PATTERN})$")
 ACCESS_PREFIX = {"public": "f", "signed": "s", "private": "p"}
+
+
+def namespace(client_id, site=""):
+    return f"{client_id}.{site}" if site else client_id
 
 
 class Storage:
@@ -43,29 +51,29 @@ class Storage:
         self.protected_root = Path(protected_root)
         self.hash_key = hash_key
 
-    def _mac(self, access, client_id, layout):
+    def _mac(self, access, client_id, layout, site):
         mac = hmac.new(self.hash_key, digestmod=hashlib.sha256)
         if access != "public":
-            mac.update(f"{access}:{client_id}\0".encode("utf-8"))
+            mac.update(f"{access}:{namespace(client_id, site)}\0".encode("utf-8"))
         if layout:
             mac.update(f"layout:{layout}\0".encode("utf-8"))
         return mac
 
-    def digest(self, data, access="public", client_id=None, layout=""):
-        mac = self._mac(access, client_id, layout)
+    def digest(self, data, access="public", client_id=None, layout="", site=""):
+        mac = self._mac(access, client_id, layout, site)
         mac.update(data)
         return mac.hexdigest()
 
-    def digest_file(self, src, access="public", client_id=None, layout=""):
-        mac = self._mac(access, client_id, layout)
+    def digest_file(self, src, access="public", client_id=None, layout="", site=""):
+        mac = self._mac(access, client_id, layout, site)
         with open(src, "rb") as fh:
             for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                 mac.update(chunk)
         return mac.hexdigest()
 
     @staticmethod
-    def key_for(digest, ext, access="public", client_id=None, folder="", size="", path=""):
-        parts = ["f" if access == "public" else f"{ACCESS_PREFIX[access]}/{client_id}"]
+    def key_for(digest, ext, access="public", client_id=None, folder="", size="", path="", site=""):
+        parts = ["f" if access == "public" else f"{ACCESS_PREFIX[access]}/{namespace(client_id, site)}"]
         parts += [p for p in (folder, size) if p]
         parts.append(path or f"{digest[:2]}/{digest[2:4]}")
         return "/".join(parts) + f"/{digest}.{ext}"

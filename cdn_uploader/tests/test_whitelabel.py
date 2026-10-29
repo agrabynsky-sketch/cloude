@@ -124,3 +124,121 @@ def test_private_files_cors_for_pattern_origin(tmp_path):
     # Another subdomain cannot use that token.
     res = client.get("/" + key, headers={"Authorization": "Bearer " + token, "Origin": "https://other.brand-b.travel"})
     assert res.status_code == 403
+
+
+# ---- one shared client for many white-label sites ---------------------------
+
+SHARED = {
+    "secret": SECRET,
+    "origins": ["https://admin.unit.travel"],                # the operator's own pages
+    "corp": "cross-origin",
+    "sites": {
+        "brand-a": {"origins": ["https://brand-a.com", "https://www.brand-a.com"],
+                    "cdn_base_url": "https://files.brand-a.com/f",
+                    "protected_base_url": "https://files.brand-a.com"},
+        "brand-b": {"origins": ["https://*.brand-b.travel"], "default_access": "private"},
+        "vip-b": {"origins": ["https://*.vip.brand-b.travel"]},
+    },
+}
+
+
+def shared_client(tmp_path):
+    return make_client(tmp_path, {"wl": SHARED})[0]
+
+
+def read(client, key, origin, token_origin=None):
+    token = create_read_token("wl", SECRET, token_origin or origin, [key])
+    return client.get("/" + key, headers={"Authorization": "Bearer " + token, "Origin": origin})
+
+
+@pytest.mark.parametrize("origin, site", [
+    ("https://brand-a.com", "brand-a"),
+    ("https://www.brand-a.com", "brand-a"),
+    ("https://shop.brand-b.travel", "brand-b"),
+    ("https://x.vip.brand-b.travel", "vip-b"),          # the most specific pattern wins
+    ("https://admin.unit.travel", None),
+])
+def test_site_of_origin(origin, site):
+    client = load_settings({"UPLOADER_HASH_KEY": "k" * 40, "UPLOADER_VIDEO_MODE": "off",
+                            "UPLOADER_CLIENTS": json.dumps({"wl": SHARED})}).clients["wl"]
+    assert client.allows(origin)
+    assert (client.site_of(origin).id if client.site_of(origin) else None) == site
+    assert not client.allows("https://brand-c.com") and client.site_of("https://brand-c.com") is None
+
+
+@pytest.mark.parametrize("sites", [
+    {"a": {"origins": ["https://brand-a.com"]}, "b": {"origins": ["https://brand-a.com"]}},
+    {"a": {"origins": ["https://admin.unit.travel"]}},      # also a client-level origin
+    {"a.b": {"origins": ["https://brand-a.com"]}},           # "." separates client and site in keys
+    {"a": {"origins": []}},
+    {"a": {"origins": ["https://brand-a.com"], "corp": "anyone"}},
+    {"a": {"origins": ["https://brand-a.com"], "cdn_base_url": "javascript:alert(1)"}},
+    {"a": {"origins": ["https://brand-a.com"], "default_access": "open"}},
+    ["https://brand-a.com"],
+])
+def test_bad_sites_rejected(sites):
+    spec = {"secret": SECRET, "origins": ["https://admin.unit.travel"], "sites": sites}
+    with pytest.raises(ConfigError):
+        load_settings({"UPLOADER_HASH_KEY": "k" * 40, "UPLOADER_VIDEO_MODE": "off",
+                       "UPLOADER_CLIENTS": json.dumps({"wl": spec})})
+
+
+def test_shared_client_needs_no_own_origins():
+    spec = {"secret": SECRET, "sites": {"a": {"origins": ["https://brand-a.com"]}}}
+    settings = load_settings({"UPLOADER_HASH_KEY": "k" * 40, "UPLOADER_VIDEO_MODE": "off",
+                              "UPLOADER_CLIENTS": json.dumps({"wl": spec})})
+    assert settings.clients["wl"].allows("https://brand-a.com")
+
+
+def test_each_site_gets_its_own_file_domain_and_namespace(tmp_path):
+    client = shared_client(tmp_path)
+    a = upload(client, "https://www.brand-a.com", access="private").json()
+    assert a["key"].startswith("p/wl.brand-a/") and a["url"] == "https://files.brand-a.com/" + a["key"]
+    public = upload(client, "https://brand-a.com", access="public").json()
+    assert public["url"].startswith("https://files.brand-a.com/f/") and public["key"].startswith("f/")
+    signed = upload(client, "https://brand-a.com", access="signed").json()
+    assert signed["url"].startswith("https://files.brand-a.com/s/wl.brand-a/")
+    # brand-b has no own domain (the common one is used) and keeps private by default.
+    b = upload(client, "https://shop.brand-b.travel").json()
+    assert b["access"] == "private" and b["url"] == "https://cdn.unit.travel/" + b["key"]
+    assert b["key"].startswith("p/wl.brand-b/")
+    # The operator's own origins store outside every site.
+    admin = upload(client, "https://admin.unit.travel", access="private").json()
+    assert admin["key"].startswith("p/wl/")
+    # Same bytes, same settings: a different name on every site.
+    assert len({a["hash"], b["hash"], admin["hash"]}) == 3
+
+
+def test_site_files_open_only_on_their_site(tmp_path):
+    client = shared_client(tmp_path)
+    key = upload(client, "https://brand-a.com", access="private").json()["key"]
+    assert read(client, key, "https://brand-a.com").status_code == 200
+    assert read(client, key, "https://www.brand-a.com").headers["access-control-allow-origin"] == \
+        "https://www.brand-a.com"
+    # Even a token that lists the key (say, a bug in the shared backend) does not open
+    # it on another site, with or without an Origin header.
+    assert read(client, key, "https://shop.brand-b.travel").status_code == 403
+    token = create_read_token("wl", SECRET, "https://shop.brand-b.travel", [key])
+    assert client.get("/" + key, headers={"Authorization": "Bearer " + token}).status_code == 403
+    pre = client.options("/" + key, headers={"Origin": "https://shop.brand-b.travel",
+                                             "Access-Control-Request-Method": "GET"})
+    assert pre.status_code == 403
+    # The operator's pages (client-level origins) see every site's files.
+    assert read(client, key, "https://admin.unit.travel").status_code == 200
+    # Files uploaded outside every site never open on a site.
+    admin_key = upload(client, "https://admin.unit.travel", access="private").json()["key"]
+    assert read(client, admin_key, "https://brand-a.com").status_code == 403
+    assert read(client, admin_key, "https://admin.unit.travel").status_code == 200
+
+
+def test_signed_links_of_a_site(tmp_path):
+    client = shared_client(tmp_path)
+    url = upload(client, "https://brand-a.com", access="signed").json()["url"]
+    parts = urlsplit(url)
+    target = parts.path + "?" + parts.query
+    assert client.get(target).headers["cross-origin-resource-policy"] == "cross-origin"
+    # A link is a link: it opens anywhere, but scripts of another site cannot read it.
+    res = client.get(target, headers={"Origin": "https://shop.brand-b.travel"})
+    assert res.status_code == 200 and "access-control-allow-origin" not in res.headers
+    res = client.get(target, headers={"Origin": "https://brand-a.com"})
+    assert res.headers["access-control-allow-origin"] == "https://brand-a.com"

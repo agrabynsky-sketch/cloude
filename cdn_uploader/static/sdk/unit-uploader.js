@@ -39,7 +39,7 @@
   var GUEST = 'unit-uploader';
   var DIALOG_LABEL = { en: 'Upload files', uk: 'Завантаження файлів', ru: 'Загрузка файлов' };
   var ACCESS = { 'public': 1, signed: 1, 'private': 1 };
-  var KEY_RE = /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31})\/([a-z0-9][a-z0-9_-]{0,63}\/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$/;
+  var KEY_RE = /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31}(\.[a-z0-9][a-z0-9_-]{0,31})?)\/([a-z0-9][a-z0-9_-]{0,63}\/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$/;
   var SIZE_RE = /^[a-z0-9][a-z0-9_]{0,31}$/;
   var current = null;
 
@@ -301,7 +301,7 @@
   var api = {
     open: open, close: close, setLang: setLang,
     fetchFile: fetchFile, fileUrl: fileUrl, download: download,
-    version: '1.3.0'
+    version: '1.3.1'
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;

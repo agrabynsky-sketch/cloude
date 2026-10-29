@@ -11,6 +11,7 @@ Routes
     GET  /api/v1/jobs/<id>     progress / result of a video job    (Bearer token)
     GET  /s/<client>/<...>     "signed" files: ?exp=&sig= link, or a read token
     GET  /p/<client>/<...>     "private" files: read token only (CORS for the client's origins)
+         (<client>.<site>/ for files of a white-label site: they open only on that site)
                                after the check nginx sends the bytes (X-Accel-Redirect)
     GET  /f/<hash path>        public files, only if UPLOADER_SERVE_FILES=1 (dev);
                                in production nginx serves them, see deploy/
@@ -242,7 +243,7 @@ def create_app(settings=None):
         stored = []
         for size_name, payload, dims in items:
             key = storage.key_for(digest, ext, claims.access, claims.client_id, claims.folder,
-                                  size_name if layout_of(claims) else "", claims.path)
+                                  size_name if layout_of(claims) else "", claims.path, claims.site)
             if isinstance(payload, bytes):
                 storage.put(key, payload)
             else:
@@ -255,9 +256,9 @@ def create_app(settings=None):
         client = settings.clients[claims.client_id]
         # The receipt lets the app's backend check the key really was uploaded by this user.
         ref = {"key": key, "receipt": receipt_for(key, claims.subject, client.secret)}
-        # A white-label client may serve files from its own domain.
-        public_base = client.cdn_base_url or settings.cdn_base_url
-        protected_base = client.protected_base_url or settings.protected_base_url
+        # A white-label client or site may serve files from its own domain.
+        public_base = client.option(claims.site, "cdn_base_url") or settings.cdn_base_url
+        protected_base = client.option(claims.site, "protected_base_url") or settings.protected_base_url
         if claims.access == "public":
             ref["url"] = f"{public_base}/{key[2:]}"
         elif claims.access == "signed":
@@ -332,7 +333,8 @@ def create_app(settings=None):
             # Sizes are made from the sanitized image, never from the upload itself.
             dims, variants = make_variants(result.data, result.ext, claims.sizes, settings.limits)
             items = [("orig", result.data, dims)] + [(n, d, (w, h)) for n, d, w, h in variants]
-        digest = storage.digest(result.data, claims.access, claims.client_id, layout_of(claims))
+        digest = storage.digest(result.data, claims.access, claims.client_id, layout_of(claims),
+                                claims.site)
         return result, digest, store(claims, digest, result.ext, items)
 
     def run_video(job, src, size, name, ext, claims, ip):
@@ -354,7 +356,8 @@ def create_app(settings=None):
                 if signature:
                     raise ValidationError("malware_detected", f"File is infected ({signature})")
             stored_size = os.path.getsize(out)
-            digest = storage.digest_file(out, claims.access, claims.client_id, layout_of(claims))
+            digest = storage.digest_file(out, claims.access, claims.client_id, layout_of(claims),
+                                         claims.site)
             stored = store(claims, digest, out_ext, [("orig", out, None)])
         except BaseException as exc:
             usage.release(claims.token_id)
@@ -483,9 +486,17 @@ def create_app(settings=None):
             "Cache-Control": "public, max-age=300",
         })
 
-    def cors(request, client, only=None):
+    def may_read(client, origin, key_site):
+        """Pages of one white-label site never get another site's files; the
+        client's own origins (outside "sites") get all of the client's files."""
+        if not client.allows(origin):
+            return False
+        site = client.site_of(origin)
+        return site is None or site.id == key_site
+
+    def cors(request, client, key_site, only=None):
         origin = request.headers.get("origin")
-        if origin and client.allows(origin) and (only is None or origin == only):
+        if origin and may_read(client, origin, key_site) and (only is None or origin == only):
             return {"Access-Control-Allow-Origin": origin, "Access-Control-Expose-Headers": EXPOSED_HEADERS,
                     "Vary": "Origin"}
         return {"Vary": "Origin"}
@@ -503,9 +514,10 @@ def create_app(settings=None):
         client = settings.clients.get(match.group(2)) if match else None
         if client is None:
             return error("not_found", "Not found", 404)
+        key_site = match.group(3) or ""
         if request.method == "OPTIONS":
             origin = request.headers.get("origin")
-            if not client.allows(origin):
+            if not may_read(client, origin, key_site):
                 return Response(status_code=403, headers={"Vary": "Origin"})
             return Response(status_code=204, headers={
                 "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET, HEAD",
@@ -522,9 +534,9 @@ def create_app(settings=None):
                 name = verify_link(key, client, request.query_params, ip, max_ttl=settings.link_max_ttl)
             except TokenError as exc:
                 return error(exc.code, exc.message, 403)
-            headers = cors(request, client)
+            headers = cors(request, client, key_site)
         else:
-            headers = cors(request, client)
+            headers = cors(request, client, key_site)
             try:
                 claims = authenticate(request, scope="read")
             except TokenError as exc:
@@ -532,12 +544,14 @@ def create_app(settings=None):
                 response.headers.update(headers)
                 return response
             origin = request.headers.get("origin")
-            if claims.client_id != match.group(2) or key not in claims.files or (
-                    origin and origin != claims.origin):
+            # Even a token that lists the key opens it only on the site it was uploaded on.
+            if (claims.client_id != match.group(2) or key not in claims.files
+                    or (origin and origin != claims.origin)
+                    or not may_read(client, claims.origin, key_site)):
                 response = error("not_allowed", "This token does not grant access to the file", 403)
                 response.headers.update(headers)
                 return response
-            headers = cors(request, client, only=claims.origin)
+            headers = cors(request, client, key_site, only=claims.origin)
 
         path = storage.resolve(key)
         if path is None:
@@ -546,7 +560,7 @@ def create_app(settings=None):
             return response
         ftype = FILE_TYPES[extension_of(path.name)]
         headers.update(PROTECTED_HEADERS)
-        headers["Cross-Origin-Resource-Policy"] = client.corp or settings.protected_corp
+        headers["Cross-Origin-Resource-Policy"] = client.option(key_site, "corp") or settings.protected_corp
         headers["Content-Disposition"] = disposition(
             ftype.category, clean_display_name(name) if name else path.name)
         log.info("read key=%s ip=%s via=%s", key, ip, via)

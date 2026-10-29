@@ -28,6 +28,10 @@ Signed links (open "signed" files without any token):
     sig = HMAC-SHA256(link key, "<key>\n<exp>\n<client IP if ip=1>\n<name>")
     link key = HMAC-SHA256(client secret, "unit-uploader:link:v1")
 
+Protected file keys start with <s|p>/<client>/, or <s|p>/<client>.<site>/
+when the token's origin belongs to one of the client's white-label sites
+(the CDN works the site out from the origin; it is not a token field).
+
 Receipts prove to the app backend that a file key was uploaded by a user:
     receipt = b64url(HMAC-SHA256(receipt key, "<key>\n<sub>"))
     receipt key = HMAC-SHA256(client secret, "unit-uploader:receipt:v1")
@@ -53,14 +57,16 @@ MAX_READ_FILES = 100
 B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?$")
 CLIENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+SITE_ID_RE = CLIENT_ID_RE
 CATEGORIES = ("image", "document", "archive", "video")
 ACCESS_LEVELS = ("public", "signed", "private")
 SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SIZE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
 MAX_SIZES = 10
-# <s|p>/<client>/[<folder>/<size>/]<path or hash shard>/<hash>.<ext>
+# <s|p>/<client>[.<site>]/[<folder>/<size>/]<path or hash shard>/<hash>.<ext>
 PROTECTED_KEY_RE = re.compile(
-    r"^(s|p)/([a-z0-9][a-z0-9_-]{0,31})/(?:[a-z0-9][a-z0-9_-]{0,63}/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$")
+    r"^(s|p)/([a-z0-9][a-z0-9_-]{0,31})(?:\.([a-z0-9][a-z0-9_-]{0,31}))?/"
+    r"(?:[a-z0-9][a-z0-9_-]{0,63}/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$")
 LINK_KEY_LABEL = b"unit-uploader:link:v1"
 RECEIPT_KEY_LABEL = b"unit-uploader:receipt:v1"
 
@@ -87,6 +93,7 @@ class Claims:
     folder: str = ""
     path: str = ""
     sizes: tuple = ()          # ((name, width, height, mode), ...)
+    site: str = ""             # white-label site of the origin ("" = none)
 
 
 def _b64encode(raw):
@@ -271,7 +278,8 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
                  now=None):
     """Return Claims for a valid token of the given scope or raise TokenError.
 
-    `clients` maps client id -> object with `.secret`, `.origins` and `.default_access`.
+    `clients` maps client id -> object with `.secret`, `.origins` and `.default_access`
+    (and, for white-label sites, `.allows(origin)`, `.site_of(origin)`, `.option()`).
     """
     now = int(time.time()) if now is None else now
     if not token or len(token) > MAX_TOKEN_LENGTH or token.count(".") != 1:
@@ -315,7 +323,12 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
     # An upload token can never be used to read files and vice versa.
     if payload.get("scope", "upload") != scope:
         raise TokenError("invalid_token", f"Not a {scope} token")
-    access = payload.get("access", getattr(client, "default_access", "public"))
+    site_of = getattr(client, "site_of", None)
+    site = site_of(origin) if site_of else None
+    site_id = site.id if site else ""
+    default_access = client.option(site_id, "default_access") if site else getattr(
+        client, "default_access", "public")
+    access = payload.get("access", default_access)
     if access not in ACCESS_LEVELS:
         raise TokenError("invalid_token", "Invalid access")
     try:
@@ -329,7 +342,7 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
         files = payload.get("files")
         if (not isinstance(files, list) or not 0 < len(files) <= MAX_READ_FILES
                 or any(not isinstance(k, str) or not PROTECTED_KEY_RE.match(k)
-                       or k.split("/")[1] != payload["cid"] for k in files)):
+                       or PROTECTED_KEY_RE.match(k).group(2) != payload["cid"] for k in files)):
             raise TokenError("invalid_token", "Invalid files")
         files = tuple(files)
 
@@ -347,6 +360,7 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
         folder=folder,
         path=path,
         sizes=sizes,
+        site=site_id,
     )
 
 
