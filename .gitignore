@@ -5,3 +5,8 @@ __pycache__/
 *.db
 *.egg-info/
 .pytest_cache/
+exely_adapter_php/application/configs/application.ini
+exely_adapter_php/data/*.sqlite
+exely_adapter_php/data/logs/*.log
+exely_adapter_php/vendor/
+exely_adapter_php/composer.lock

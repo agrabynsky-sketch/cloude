@@ -1,0 +1,19 @@
+{
+    "name": "unit-travel/exely-adapter",
+    "description": "Adapter between Exely Channel Manager and the Unit.Travel Partner Inventory API (PHP 5, Zend Framework 1)",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=5.3.3",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-pdo": "*",
+        "zendframework/zendframework1": "~1.12"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "~4.8"
+    },
+    "autoload": {
+        "psr-0": {"Exely_": "library/"}
+    }
+}

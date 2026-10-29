@@ -25,7 +25,7 @@ class Base(DeclarativeBase):
 
 
 class BookingRecord(Base):
-    __tablename__ = "bookings"
+    __tablename__ = "exely_bookings"
 
     reservation_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     property_id: Mapped[int] = mapped_column(BigInteger, index=True)

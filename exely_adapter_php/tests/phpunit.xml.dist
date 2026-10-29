@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="bootstrap.php" colors="false">
+    <testsuites>
+        <testsuite name="Exely adapter">
+            <directory>library</directory>
+            <directory>application</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

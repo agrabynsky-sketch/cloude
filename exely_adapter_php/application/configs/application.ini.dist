@@ -1,0 +1,59 @@
+; Copy to application.ini and fill in the secrets. Booleans: use 1 / 0.
+
+[production]
+phpSettings.display_startup_errors = 0
+phpSettings.display_errors = 0
+phpSettings.date.timezone = "UTC"
+; update waits up to ari.statusWaitSeconds per ARI message
+phpSettings.max_execution_time = 120
+includePaths.library = APPLICATION_PATH "/../library"
+bootstrap.path = APPLICATION_PATH "/Bootstrap.php"
+bootstrap.class = "Bootstrap"
+appnamespace = ""
+autoloaderNamespaces[] = "Exely_"
+
+resources.frontController.controllerDirectory = APPLICATION_PATH "/controllers"
+resources.frontController.params.displayExceptions = 0
+
+; The booking queue (schema: data/schema.mysql.sql)
+resources.db.adapter = "pdo_mysql"
+resources.db.params.host = "localhost"
+resources.db.params.dbname = "exely_adapter"
+resources.db.params.username = "exely_adapter"
+resources.db.params.password = ""
+resources.db.params.charset = "utf8mb4"
+resources.db.isDefaultTableAdapter = true
+
+; Credentials Exely Channel Manager sends in every request (we issue them to Exely).
+exely.username = "exely"
+exely.password = ""
+; Booking notification URL Exely assigns after certification
+; (https://cm.hopenapi.com/Api/Distribution/bookingnotif//<channel>). Empty disables it.
+exely.notifyUrl = ""
+
+; Unit.Travel Partner API: sandbox https://api.test.unit.travel/partner/v1,
+; production https://api.unit.travel/partner/v1
+unitTravel.baseUrl = "https://api.test.unit.travel/partner/v1"
+unitTravel.apiKey = ""
+unitTravel.timeout = 30
+; CA bundle for TLS verification when the system one is outdated (PHP 5 era hosts)
+unitTravel.caFile = ""
+; Secret for X-UnitTravel-Signature; empty disables /webhooks/unit-travel.
+unitTravel.webhookSecret = ""
+; Pull /reservations of every active connection on each get-bookings call.
+unitTravel.pullReservations = 1
+; Send Exely's confirmation in the acknowledge body (needs Partner API support).
+unitTravel.ackWithDetails = 0
+
+ari.statusWaitSeconds = 10
+ari.statusPollInterval = 0.5
+ari.maxItemsPerMessage = 1000
+bookings.relevanceDays = 60
+
+log.path = APPLICATION_PATH "/../data/logs/adapter.log"
+
+[development : production]
+phpSettings.display_startup_errors = 1
+phpSettings.display_errors = 1
+resources.db.adapter = "pdo_sqlite"
+resources.db.params.dbname = APPLICATION_PATH "/../data/exely_adapter.sqlite"
