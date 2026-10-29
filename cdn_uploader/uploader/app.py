@@ -42,6 +42,7 @@ from .tokens import (PROTECTED_KEY_RE, TokenError, receipt_for, sign_link, verif
                      verify_token)
 from .validators import (ALIASES, FILE_TYPES, ValidationError, extension_of, new_context,
                          process_video, sanitize)
+from .validators.images import make_variants
 from .validators.common import clean_display_name
 
 log = logging.getLogger("uploader")
@@ -231,23 +232,57 @@ def create_app(settings=None):
         # Jobs survive a token refresh: they belong to the client + user, not the token.
         return (claims.client_id, claims.subject, claims.origin)
 
-    def describe_file(key, digest, claims, name, ext, mime, category, size, original_size):
-        """What the uploader hands to the application for one stored file."""
+    def layout_of(claims):
+        """Folder + sizes, which take part in the file name ("" = the plain layout)."""
+        if not (claims.folder or claims.sizes):
+            return ""
+        return claims.folder + "|" + ";".join(f"{n}-{w}-{h}-{m}" for n, w, h, m in claims.sizes)
+
+    def store(claims, digest, ext, items):
+        """Write (size name, bytes or temp file path, dimensions) items; returns stored entries."""
+        stored = []
+        for size_name, payload, dims in items:
+            key = storage.key_for(digest, ext, claims.access, claims.client_id, claims.folder,
+                                  size_name if layout_of(claims) else "", claims.path)
+            if isinstance(payload, bytes):
+                storage.put(key, payload)
+            else:
+                storage.put_file(key, payload)
+            stored.append((size_name, key, dims))
+        return stored
+
+    def file_ref(key, claims):
+        """Key, URL and receipt for one stored file (or one size of an image)."""
         client = settings.clients[claims.client_id]
-        body = {
-            "key": key, "access": claims.access, "hash": digest, "name": name, "ext": ext,
-            "mime": mime, "category": category, "size": size, "original_size": original_size,
-            # Lets the app's backend check the key really was uploaded by this user.
-            "receipt": receipt_for(key, claims.subject, client.secret),
-        }
+        # The receipt lets the app's backend check the key really was uploaded by this user.
+        ref = {"key": key, "receipt": receipt_for(key, claims.subject, client.secret)}
         if claims.access == "public":
-            body["url"] = f"{settings.cdn_base_url}/{key[2:]}"
+            ref["url"] = f"{settings.cdn_base_url}/{key[2:]}"
         elif claims.access == "signed":
-            body["url"] = sign_link(key, claims.client_id, client.secret, settings.protected_base_url,
-                                    ttl=settings.preview_link_ttl)
-            body["expires_at"] = int(time.time()) + settings.preview_link_ttl
+            ref["url"] = sign_link(key, claims.client_id, client.secret, settings.protected_base_url,
+                                   ttl=settings.preview_link_ttl)
+            ref["expires_at"] = int(time.time()) + settings.preview_link_ttl
         else:
-            body["url"] = f"{settings.protected_base_url}/{key}"  # opens only with a read token
+            ref["url"] = f"{settings.protected_base_url}/{key}"  # opens only with a read token
+        return ref
+
+    def describe_file(stored, digest, claims, name, ext, mime, category, size, original_size):
+        """What the uploader hands to the application for one upload."""
+        _, key, dims = stored[0]
+        body = {
+            **file_ref(key, claims), "access": claims.access, "hash": digest, "name": name,
+            "ext": ext, "mime": mime, "category": category, "size": size,
+            "original_size": original_size,
+        }
+        if claims.folder:
+            body["folder"] = claims.folder
+        if dims:
+            body["width"], body["height"] = dims
+        if category == "image" and claims.sizes:
+            body["variants"] = {
+                size_name: {**file_ref(k, claims), "width": d[0], "height": d[1]}
+                for size_name, k, d in stored
+            }
         return body
 
     def rate_limited(rl, key):
@@ -290,8 +325,13 @@ def create_app(settings=None):
                 signature = None
             if signature:
                 raise ValidationError("malware_detected", f"File is infected ({signature})")
-        digest, key = storage.save(result.data, result.ext, claims.access, claims.client_id)
-        return result, digest, key
+        items = [("orig", result.data, None)]
+        if result.category == "image":
+            # Sizes are made from the sanitized image, never from the upload itself.
+            dims, variants = make_variants(result.data, result.ext, claims.sizes, settings.limits)
+            items = [("orig", result.data, dims)] + [(n, d, (w, h)) for n, d, w, h in variants]
+        digest = storage.digest(result.data, claims.access, claims.client_id, layout_of(claims))
+        return result, digest, store(claims, digest, result.ext, items)
 
     def run_video(job, src, size, name, ext, claims, ip):
         """Background part of a video upload."""
@@ -312,7 +352,8 @@ def create_app(settings=None):
                 if signature:
                     raise ValidationError("malware_detected", f"File is infected ({signature})")
             stored_size = os.path.getsize(out)
-            digest, key = storage.save_file(out, out_ext, claims.access, claims.client_id)
+            digest = storage.digest_file(out, claims.access, claims.client_id, layout_of(claims))
+            stored = store(claims, digest, out_ext, [("orig", out, None)])
         except BaseException as exc:
             usage.release(claims.token_id)
             code = getattr(exc, "code", type(exc).__name__)
@@ -323,8 +364,8 @@ def create_app(settings=None):
             _unlink(src)
             _unlink(out)
         log.info("stored client=%s sub=%s ip=%s name=%r key=%s size=%d->%d",
-                 claims.client_id, claims.subject, ip, name, key, size, stored_size)
-        return describe_file(key, digest, claims, name, out_ext, mime, "video", stored_size, size)
+                 claims.client_id, claims.subject, ip, name, stored[0][1], size, stored_size)
+        return describe_file(stored, digest, claims, name, out_ext, mime, "video", stored_size, size)
 
     async def upload(request):
         ip = client_ip(request)
@@ -352,7 +393,7 @@ def create_app(settings=None):
         try:
             data = await read_body(request, settings.limits.max_file_size)
             async with cpu_slots:
-                result, digest, key = await run_in_threadpool(process, name, data, claims)
+                result, digest, stored = await run_in_threadpool(process, name, data, claims)
         except BodyTooLarge:
             usage.release(claims.token_id)
             return error("file_too_large", "File is too large", 413)
@@ -374,10 +415,11 @@ def create_app(settings=None):
             log.exception("upload failed name=%r", name)
             return error("internal_error", "Upload failed", 500)
 
-        log.info("stored client=%s sub=%s ip=%s name=%r key=%s size=%d->%d",
-                 claims.client_id, claims.subject, ip, name, key, len(data), len(result.data))
+        log.info("stored client=%s sub=%s ip=%s name=%r key=%s sizes=%d size=%d->%d",
+                 claims.client_id, claims.subject, ip, name, stored[0][1], len(stored),
+                 len(data), len(result.data))
         return JSONResponse(
-            describe_file(key, digest, claims, name, result.ext, result.mime, result.category,
+            describe_file(stored, digest, claims, name, result.ext, result.mime, result.category,
                           len(result.data), len(data)),
             status_code=201, headers=API_HEADERS)
 

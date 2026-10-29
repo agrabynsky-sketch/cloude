@@ -6,7 +6,9 @@
 получает в ответ ключи и ссылки на файлы. Каждой загрузке приложение задаёт
 уровень доступа: **публичные** файлы, файлы только по **временным ссылкам** и
 файлы, которые открываются **только внутри приложения** (паспорта, справки).
-Интерфейс окна — на английском, украинском и русском, с переключением на лету.
+Для фотографий можно сразу получить несколько размеров (`orig`, `small`,
+`medium`, …), разложенных по папкам. Интерфейс окна — на английском,
+украинском и русском, с переключением на лету.
 
 ```
 https://cdn.unit.travel/f/5a/31/5a3138c4f70853f57070dd57667316094cf558fbbf3e608b185202f49d6f1c35.pdf
@@ -149,6 +151,9 @@ DEMO_CLIENT_SECRET=demo-secret-change-me-0123456789abcdef .venv/bin/uvicorn exam
 | `types` | нет | подмножество `["image", "document", "archive", "video"]` (по умолчанию все) |
 | `sub` | нет | id пользователя: пишется в лог и входит в квитанцию файла |
 | `access` | нет | `public`, `signed` или `private` — см. «Доступ к файлам» (по умолчанию `default_access` клиента, обычно `public`) |
+| `folder` | нет | папка, например `rooms` или `photos/rooms` — см. «Размеры фото и папки» |
+| `sizes` | нет | размеры фото, например `["small-70-0", "big-1200-800"]` |
+| `path` | нет | подпапки вместо шардинга по хешу, например `10/10991` |
 
 **Python** (можно просто импортировать `uploader/tokens.py`):
 
@@ -158,6 +163,11 @@ from uploader.tokens import create_token
 token = create_token("booking", SECRET, "https://app.unit.travel",
                      subject=str(user.id), max_files=10, types=["image", "document"],
                      access="private")
+
+# фото номеров: оригинал + 4 размера в photos/rooms/<размер>/10/10991/
+token = create_token("booking", SECRET, "https://app.unit.travel", subject=str(user.id),
+                     types=["image"], folder="photos/rooms", path=f"{hotel_id // 1000}/{hotel_id}",
+                     sizes=["preview_panel-100-100", "small-70-0", "medium-350-0", "big-1200-800"])
 ```
 
 **Node.js:**
@@ -165,7 +175,8 @@ token = create_token("booking", SECRET, "https://app.unit.travel",
 ```js
 const crypto = require('crypto');
 
-function createUploadToken({ clientId, secret, origin, sub, ttl = 900, maxFiles = 20, types, access }) {
+function createUploadToken({ clientId, secret, origin, sub, ttl = 900, maxFiles = 20, types, access,
+                            folder, sizes, path }) {
   const payload = {
     cid: clientId,
     origin,
@@ -176,6 +187,9 @@ function createUploadToken({ clientId, secret, origin, sub, ttl = 900, maxFiles 
   if (sub) payload.sub = String(sub);
   if (types) payload.types = types;
   if (access) payload.access = access;      // 'public' | 'signed' | 'private'
+  if (folder) payload.folder = folder;      // e.g. photos/rooms
+  if (sizes) payload.sizes = sizes;         // e.g. ['small-70-0', 'big-1200-800']
+  if (path) payload.path = path;            // e.g. 10/10991
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = crypto.createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${sig}`;
@@ -191,7 +205,8 @@ function b64url(string $raw): string {
 
 function create_upload_token(string $clientId, string $secret, string $origin,
                              string $sub = '', int $ttl = 900, int $maxFiles = 20,
-                             string $access = 'public'): string {
+                             string $access = 'public', string $folder = '',
+                             array $sizes = [], string $path = ''): string {
     $payload = [
         'cid' => $clientId,
         'origin' => $origin,
@@ -201,6 +216,9 @@ function create_upload_token(string $clientId, string $secret, string $origin,
         'access' => $access,
     ];
     if ($sub !== '') $payload['sub'] = $sub;
+    if ($folder !== '') $payload['folder'] = $folder;     // e.g. photos/rooms
+    if ($sizes) $payload['sizes'] = array_values($sizes); // e.g. ['small-70-0', 'big-1200-800']
+    if ($path !== '') $payload['path'] = $path;           // e.g. 10/10991
     $body = b64url(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     return $body . '.' . b64url(hash_hmac('sha256', $body, $secret, true));
 }
@@ -381,6 +399,75 @@ function verify_receipt(string $key, string $sub, string $receipt, string $secre
 
 Токен чтения: до 100 ключей одного клиента, срок — не дольше
 `UPLOADER_TOKEN_MAX_TTL`; токен загрузки не может читать, токен чтения — загружать.
+
+## Размеры фото и папки
+
+Папку и размеры задаёт **бэкенд приложения** в токене загрузки (`folder`,
+`sizes`, `path`), поэтому пользователь не может ни подменить папку, ни
+заказать размер 50000 px. Удобно держать на бэкенде пресеты («номера»,
+«отели», «аватары») и выбирать нужный при выдаче токена — так сделано в демо.
+
+```
+sizes = ["preview_panel-100-100", "small-70-0", "medium-350-0", "big-1200-800", "thumb-100-100-crop"]
+```
+
+* формат размера — `имя-ширина-высота[-fit|-crop]` (или объект
+  `{"name": "small", "width": 70, "height": 0, "mode": "fit"}`), до 10 размеров,
+  стороны до 4096 px; имя — латиница, цифры и `_`;
+* `0` по одной стороне — пропорционально: `small-70-0` → ширина 70;
+* обе стороны, режим `fit` (по умолчанию) — вписать в рамку без обрезки:
+  `big-1200-800` для 1600×1200 → 1067×800;
+* `crop` — заполнить рамку ровно и обрезать лишнее по центру:
+  `thumb-100-100-crop` → 100×100;
+* фото **никогда не увеличиваются**: если оригинал меньше, размер остаётся
+  размером оригинала;
+* `orig` создаётся всегда — это очищенный оригинал (перекодирован, EXIF и
+  прочие метаданные удалены, поворот по EXIF применён), в исходном разрешении;
+* формат размеров тот же, что у оригинала (jpg/png/gif/webp), прозрачность
+  сохраняется, анимированные GIF/WebP остаются анимированными;
+* документы и видео в такой папке сохраняются только в `orig`.
+
+Раскладка и ссылки — у всех размеров одно имя файла, отличается только папка
+размера:
+
+```
+folder=photos/rooms, path=10/10991:
+https://cdn.unit.travel/f/photos/rooms/orig/10/10991/<hash>.jpg
+https://cdn.unit.travel/f/photos/rooms/preview_panel/10/10991/<hash>.jpg
+https://cdn.unit.travel/f/photos/rooms/small/10/10991/<hash>.jpg
+https://cdn.unit.travel/f/photos/rooms/medium/10/10991/<hash>.jpg
+https://cdn.unit.travel/f/photos/rooms/big/10/10991/<hash>.jpg
+```
+
+Без `path` вместо `10/10991` используется шардинг по хешу (`ab/cd`). Чтобы
+адреса начинались, как сейчас, с `/static/`: `UPLOADER_STORAGE_DIR=/srv/unit-cdn/static`,
+`UPLOADER_CDN_BASE_URL=https://cdn.unit.travel/static`, а в `deploy/nginx.conf`
+замените `/f/` на `/static/` в `location /f/` и в двух `location ~ "^/f/…"` под ним
+(`root /srv/unit-cdn;` остаётся). Ключи в ответе по-прежнему начинаются с `f/`.
+
+В ответе загрузки (и в `UnitUploader.open()`) у фото появляются размеры и
+`variants`; у каждого размера свой `key`, `url` и `receipt`:
+
+```json
+{"key": "f/photos/rooms/orig/10/10991/382a…bd8a.jpg", "url": "https://cdn.unit.travel/f/photos/rooms/orig/…",
+ "folder": "photos/rooms", "width": 1600, "height": 1200, "receipt": "…",
+ "variants": {
+   "orig":          {"key": "f/photos/rooms/orig/10/10991/382a…bd8a.jpg",          "url": "…", "width": 1600, "height": 1200, "receipt": "…"},
+   "preview_panel": {"key": "f/photos/rooms/preview_panel/10/10991/382a…bd8a.jpg", "url": "…", "width": 100,  "height": 75,   "receipt": "…"},
+   "small":         {"key": "f/photos/rooms/small/10/10991/382a…bd8a.jpg",         "url": "…", "width": 70,   "height": 53,   "receipt": "…"},
+   "medium":        {"key": "f/photos/rooms/medium/10/10991/382a…bd8a.jpg",        "url": "…", "width": 350,  "height": 263,  "receipt": "…"},
+   "big":           {"key": "f/photos/rooms/big/10/10991/382a…bd8a.jpg",           "url": "…", "width": 1067, "height": 800,  "receipt": "…"}}}
+```
+
+Уровни доступа работают и для размеров: при `access: "private"` ключи
+выглядят как `p/<клиент>/passports/small/…`, и каждый открывается только по
+токену чтения (в токен можно перечислить нужные размеры).
+
+Настройки размеров входят в хеш имени: если поменять пресет (например,
+`small` станет 100 px), новые загрузки получат новые имена, а старые файлы
+останутся как были — под одним именем никогда не окажутся разные «small».
+Замер: фото 7000×5000 (35 Мп) — около 3 с на очистку оригинала и ещё ~1,3 с
+на четыре размера.
 
 ## Языки
 

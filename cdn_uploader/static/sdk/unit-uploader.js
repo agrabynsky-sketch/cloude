@@ -15,7 +15,8 @@
  *     maxFiles: 10,                     // optional
  *     onFileUploaded: (file) => {},     // optional, fires per stored file
  *   });
- *   // files: [{ key, access, url, expires_at?, receipt, name, size, mime, ext, category, hash }]
+ *   // files: [{ key, access, url, expires_at?, receipt, name, size, mime, ext, category, hash,
+ *   //           folder?, width?, height?, variants?: { orig: {key, url, receipt, width, height}, small: {...} } }]
  *   //        or null if cancelled
  *
  *   UnitUploader.setLang('ru');          // follow the app's language switch while open
@@ -36,6 +37,8 @@
   var GUEST = 'unit-uploader';
   var DIALOG_LABEL = { en: 'Upload files', uk: 'Завантаження файлів', ru: 'Загрузка файлов' };
   var ACCESS = { 'public': 1, signed: 1, 'private': 1 };
+  var KEY_RE = /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31})\/([a-z0-9][a-z0-9_-]{0,63}\/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$/;
+  var SIZE_RE = /^[a-z0-9][a-z0-9_]{0,31}$/;
   var current = null;
 
   function isLocalHost(hostname) {
@@ -62,17 +65,30 @@
     return null;
   }
 
-  // Only well-formed results from our own iframe reach the app.
-  function safeFile(f, cdnOrigin) {
-    if (!f || typeof f !== 'object' || typeof f.url !== 'string') return null;
+  function safeRef(r, cdnOrigin) {
+    if (!r || typeof r !== 'object' || typeof r.url !== 'string') return null;
     var url;
-    try { url = new URL(f.url); } catch (e) { return null; }
+    try { url = new URL(r.url); } catch (e) { return null; }
     if (!isSafeUrl(url) || (cdnOrigin && url.origin !== cdnOrigin)) return null;
     var out = {
-      key: /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31})\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.[a-z0-9.]{2,6}$/.test(f.key) ? f.key : '',
-      access: ACCESS[f.access] ? f.access : 'public',
+      key: KEY_RE.test(r.key) ? r.key : '',
       url: url.href,
-      receipt: /^[A-Za-z0-9_-]{20,100}$/.test(f.receipt) ? f.receipt : '',
+      receipt: /^[A-Za-z0-9_-]{20,100}$/.test(r.receipt) ? r.receipt : ''
+    };
+    if (typeof r.expires_at === 'number') out.expires_at = r.expires_at;
+    if (typeof r.width === 'number' && typeof r.height === 'number') { out.width = r.width; out.height = r.height; }
+    return out;
+  }
+
+  // Only well-formed results from our own iframe reach the app.
+  function safeFile(f, cdnOrigin) {
+    var ref = safeRef(f, cdnOrigin);
+    if (!ref) return null;
+    var out = {
+      key: ref.key,
+      access: ACCESS[f.access] ? f.access : 'public',
+      url: ref.url,
+      receipt: ref.receipt,
       name: String(f.name || ''),
       size: Number(f.size) || 0,
       mime: String(f.mime || ''),
@@ -80,7 +96,16 @@
       category: String(f.category || ''),
       hash: /^[0-9a-f]{64}$/.test(f.hash) ? f.hash : ''
     };
-    if (typeof f.expires_at === 'number') out.expires_at = f.expires_at;
+    if (ref.expires_at) out.expires_at = ref.expires_at;
+    if (ref.width) { out.width = ref.width; out.height = ref.height; }
+    if (typeof f.folder === 'string') out.folder = f.folder;
+    if (f.variants && typeof f.variants === 'object') {
+      out.variants = {};
+      Object.keys(f.variants).forEach(function (name) {
+        var v = SIZE_RE.test(name) && safeRef(f.variants[name], cdnOrigin);
+        if (v) out.variants[name] = v;
+      });
+    }
     return out;
   }
 
@@ -266,7 +291,7 @@
   var api = {
     open: open, close: close, setLang: setLang,
     fetchFile: fetchFile, fileUrl: fileUrl, download: download,
-    version: '1.1.0'
+    version: '1.2.0'
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;

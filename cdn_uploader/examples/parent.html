@@ -29,6 +29,7 @@
     <button id="all">Files (public)</button>
     <button id="visa">Visa (temporary links)</button>
     <button id="passport">Passport (private, only in this app)</button>
+    <button id="rooms">Room photos (sizes)</button>
     <button id="videos">Videos</button>
   </p>
   <ul id="result"></ul>
@@ -39,7 +40,8 @@
     const post = (url, body) => fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
     }).then(r => r.json());
-    const uploadToken = access => () => post('/api/cdn-upload-token?access=' + access).then(j => j.token);
+    const uploadToken = (access, preset) => () =>
+      post('/api/cdn-upload-token?access=' + access + '&preset=' + (preset || '')).then(j => j.token);
 
     // The app's language switch: <html lang> is the SDK's default, setLang follows changes live.
     const langSelect = document.getElementById('lang');
@@ -48,14 +50,14 @@
       UnitUploader.setLang(langSelect.value);
     };
 
-    function open(access, extra) {
+    function open(access, extra, preset) {
       return UnitUploader.open(Object.assign({
         uploaderUrl: '{{UPLOADER_URL}}/uploader/',
-        getToken: uploadToken(access),
+        getToken: uploadToken(access, preset),
         languages: ['en', 'uk', 'ru'],
         onLanguageChange: lang => { langSelect.value = lang; document.documentElement.lang = lang; },
       }, extra)).then(async files => {
-        if (files) await post('/api/files', { files: files.map(f => ({ key: f.key, receipt: f.receipt })) });
+        if (files) await post('/api/files', { files: files.map(f => ({ key: f.key, receipt: f.receipt, variants: f.variants })) });
         show(files);
       }, err => alert(err.message));
     }
@@ -100,6 +102,18 @@
         const meta = document.createElement('code');
         meta.textContent = ` ${f.mime}, ${f.size} B — key ${f.key}`;
         li.append(name, tag, ' ', btn, meta);
+        if (f.variants) {
+          const sizes = document.createElement('div');
+          for (const [size, v] of Object.entries(f.variants)) {
+            const a = document.createElement('a');
+            a.href = v.url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = `${size} ${v.width}×${v.height}`;
+            sizes.append(a, ' · ');
+          }
+          li.append(sizes);
+        }
         list.append(li);
       }
     }
@@ -109,6 +123,8 @@
       open('signed', { types: ['image', 'document'], title: { en: 'Visa', uk: 'Віза', ru: 'Виза' } });
     document.getElementById('passport').onclick = () =>
       open('private', { types: ['image', 'document'], title: { en: 'Passport', uk: 'Паспорт', ru: 'Паспорт' } });
+    document.getElementById('rooms').onclick = () =>
+      open('public', { types: ['image'], title: { en: 'Room photos', uk: 'Фото номерів', ru: 'Фото номеров' } }, 'rooms');
     document.getElementById('videos').onclick = () => open('public', { types: ['video'] });
   </script>
 </body>

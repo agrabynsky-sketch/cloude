@@ -605,6 +605,9 @@
       category: String(body.category || ''), hash: String(body.hash || '')
     };
     if (typeof body.expires_at === 'number') file.expires_at = body.expires_at;
+    if (typeof body.width === 'number') { file.width = body.width; file.height = Number(body.height) || 0; }
+    if (typeof body.folder === 'string') file.folder = body.folder;
+    if (body.variants && typeof body.variants === 'object') file.variants = body.variants;
     return file;
   }
 
@@ -738,7 +741,10 @@
     } else if (item.status === 'waiting') {
       text = errorText(item.code) + ', ' +
         fmt(t.waiting, { s: Math.max(1, Math.ceil((item.retryAt - Date.now()) / 1000)) });
-    } else if (item.status === 'done') text = t.uploaded;
+    } else if (item.status === 'done') {
+      var sizes = item.result && item.result.variants ? Object.keys(item.result.variants).length : 0;
+      text = sizes > 1 ? fmt(t.uploadedSizes, { n: sizes }) : t.uploaded;
+    }
     else if (item.status === 'error') text = errorText(item.code);
     item.statusEl.textContent = text;
     item.statusEl.title = item.detail || '';

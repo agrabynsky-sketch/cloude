@@ -16,6 +16,10 @@ Payload fields:
     max_files  files allowed per token (capped by the server)          optional
     types      subset of ["image", "document", "archive", "video"]     optional
     access     "public" | "signed" | "private" for the stored files    optional
+    folder     folder for the files, e.g. "rooms" or "photos/rooms"     optional
+    sizes      image sizes to generate, e.g. ["small-70-0", "big-1200-800",
+               "preview_panel-100-100-crop"] (see parse_sizes)          optional
+    path       sub-folders instead of the hash shard, e.g. "10/10991"   optional
   read tokens (open "private" files):
     files      list of file keys the token may read                    required
 
@@ -51,8 +55,12 @@ ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?$")
 CLIENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 CATEGORIES = ("image", "document", "archive", "video")
 ACCESS_LEVELS = ("public", "signed", "private")
+SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SIZE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,31}$")
+MAX_SIZES = 10
+# <s|p>/<client>/[<folder>/<size>/]<path or hash shard>/<hash>.<ext>
 PROTECTED_KEY_RE = re.compile(
-    r"^(s|p)/([a-z0-9][a-z0-9_-]{0,31})/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}\.[a-z0-9.]{2,6}$")
+    r"^(s|p)/([a-z0-9][a-z0-9_-]{0,31})/(?:[a-z0-9][a-z0-9_-]{0,63}/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$")
 LINK_KEY_LABEL = b"unit-uploader:link:v1"
 RECEIPT_KEY_LABEL = b"unit-uploader:receipt:v1"
 
@@ -76,6 +84,9 @@ class Claims:
     access: str = "public"
     scope: str = "upload"
     files: tuple = ()
+    folder: str = ""
+    path: str = ""
+    sizes: tuple = ()          # ((name, width, height, mode), ...)
 
 
 def _b64encode(raw):
@@ -95,6 +106,59 @@ def _sign(secret, message):
     return hmac.new(secret.encode("utf-8"), message.encode("ascii"), hashlib.sha256).digest()
 
 
+def parse_segments(value, what="folder", max_segments=3):
+    """"photos/rooms" -> "photos/rooms"; lowercase letters, digits, "_" and "-" only."""
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or len(value) > 200:
+        raise ValueError(f"Invalid {what}")
+    parts = value.strip("/").split("/")
+    if not 1 <= len(parts) <= max_segments or not all(SEGMENT_RE.match(p) for p in parts):
+        raise ValueError(f"Invalid {what} {value!r}")
+    return "/".join(parts)
+
+
+def parse_sizes(raw, max_side=4096):
+    """Image sizes to generate, as ((name, width, height, mode), ...).
+
+    Each entry is "name-width-height[-fit|-crop]" or
+    {"name": ..., "width": ..., "height": ..., "mode": ...}.
+    0 for width or height keeps the proportions. "fit" (default) fits the
+    image inside the box; "crop" fills the box exactly, cutting the overflow
+    from the centre. Images are never upscaled. "orig" is always stored.
+    """
+    if raw in (None, []):
+        return ()
+    if not isinstance(raw, list) or len(raw) > MAX_SIZES:
+        raise ValueError(f"Sizes must be a list of at most {MAX_SIZES}")
+    out, names = [], set()
+    for item in raw:
+        if isinstance(item, str):
+            parts = item.split("-")
+            if len(parts) not in (3, 4) or not all(p.isdigit() and len(p) <= 5 for p in parts[1:3]):
+                raise ValueError(f"Invalid size {item!r}, expected name-width-height[-crop]")
+            name, width, height = parts[0], int(parts[1]), int(parts[2])
+            mode = parts[3] if len(parts) == 4 else "fit"
+        elif isinstance(item, dict):
+            name, width, height = item.get("name"), item.get("width", 0), item.get("height", 0)
+            mode = item.get("mode", "fit")
+            if any(not isinstance(v, int) or isinstance(v, bool) for v in (width, height)):
+                raise ValueError(f"Invalid size {item!r}")
+        else:
+            raise ValueError(f"Invalid size {item!r}")
+        if not isinstance(name, str) or not SIZE_NAME_RE.match(name) or name == "orig" or name in names:
+            raise ValueError(f"Invalid or duplicate size name {name!r}")
+        if mode not in ("fit", "crop"):
+            raise ValueError(f"Size {name!r}: mode must be fit or crop")
+        if not (0 <= width <= max_side and 0 <= height <= max_side) or width == height == 0:
+            raise ValueError(f"Size {name!r}: width/height must be 0..{max_side}, not both 0")
+        if mode == "crop" and 0 in (width, height):
+            raise ValueError(f"Size {name!r}: crop needs both width and height")
+        names.add(name)
+        out.append((name, width, height, mode))
+    return tuple(out)
+
+
 def _derived_key(secret, label):
     return hmac.new(secret.encode("utf-8"), label, hashlib.sha256).digest()
 
@@ -105,8 +169,12 @@ def _encode(payload, secret):
 
 
 def create_token(client_id, secret, origin, *, ttl=900, subject="", max_files=20, types=None,
-                 access=None):
-    """Upload token. `access` decides who can open the stored files."""
+                 access=None, folder=None, sizes=None, path=None):
+    """Upload token. `access` decides who can open the stored files; `folder`,
+    `sizes` and `path` decide where they go and which image sizes are made."""
+    parse_segments(folder, "folder", 3)
+    parse_segments(path, "path", 4)
+    parse_sizes(sizes)
     payload = {
         "cid": client_id,
         "origin": origin,
@@ -120,6 +188,12 @@ def create_token(client_id, secret, origin, *, ttl=900, subject="", max_files=20
         payload["types"] = list(types)
     if access:
         payload["access"] = access
+    if folder:
+        payload["folder"] = folder
+    if sizes:
+        payload["sizes"] = list(sizes)
+    if path:
+        payload["path"] = path
     return _encode(payload, secret)
 
 
@@ -193,7 +267,8 @@ def verify_receipt(key, subject, receipt, secret):
     return hmac.compare_digest(receipt_for(key, subject, secret), str(receipt))
 
 
-def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", now=None):
+def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_variant_side=4096,
+                 now=None):
     """Return Claims for a valid token of the given scope or raise TokenError.
 
     `clients` maps client id -> object with `.secret`, `.origins` and `.default_access`.
@@ -241,6 +316,12 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", now=
     access = payload.get("access", getattr(client, "default_access", "public"))
     if access not in ACCESS_LEVELS:
         raise TokenError("invalid_token", "Invalid access")
+    try:
+        folder = parse_segments(payload.get("folder"), "folder", 3)
+        path = parse_segments(payload.get("path"), "path", 4)
+        sizes = parse_sizes(payload.get("sizes"), max_variant_side)
+    except ValueError as exc:
+        raise TokenError("invalid_token", str(exc)) from None
     files = ()
     if scope == "read":
         files = payload.get("files")
@@ -261,6 +342,9 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", now=
         access=access,
         scope=scope,
         files=files,
+        folder=folder,
+        path=path,
+        sizes=sizes,
     )
 
 
@@ -274,9 +358,13 @@ def main():
     parser.add_argument("--max-files", type=int, default=20)
     parser.add_argument("--types", nargs="*", choices=CATEGORIES)
     parser.add_argument("--access", choices=ACCESS_LEVELS)
+    parser.add_argument("--folder")
+    parser.add_argument("--path")
+    parser.add_argument("--size", action="append", dest="sizes", metavar="NAME-W-H[-crop]")
     args = parser.parse_args()
     print(create_token(args.client, args.secret, args.origin, ttl=args.ttl, subject=args.sub,
-                       max_files=args.max_files, types=args.types, access=args.access))
+                       max_files=args.max_files, types=args.types, access=args.access,
+                       folder=args.folder, sizes=args.sizes, path=args.path))
 
 
 if __name__ == "__main__":

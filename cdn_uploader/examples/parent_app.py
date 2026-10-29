@@ -30,6 +30,13 @@ PAGE = Path(__file__).with_name("parent.html").read_text(encoding="utf-8")
 USER_ID = "demo-user"
 OWNED_KEYS = set()
 
+# Where uploads go and which image sizes are made is decided here, on the
+# server (it ends up in the signed token), never by the browser.
+PRESETS = {
+    "rooms": {"folder": "photos/rooms",
+              "sizes": ["preview_panel-100-100", "small-70-0", "medium-350-0", "big-1200-800"]},
+}
+
 
 async def index(request):
     return HTMLResponse(PAGE.replace("{{UPLOADER_URL}}", html.escape(UPLOADER_URL)))
@@ -39,10 +46,11 @@ async def upload_token(request):
     # In a real app: check the user's session/CSRF here and decide what this
     # user may upload and how private it must be (passports -> "private").
     access = request.query_params.get("access", "public")
+    preset = PRESETS.get(request.query_params.get("preset", ""), {})
     if access not in ("public", "signed", "private"):
         return JSONResponse({"error": "bad access"}, status_code=400)
     token = create_token(CLIENT_ID, CLIENT_SECRET, ORIGIN, ttl=TOKEN_TTL, subject=USER_ID,
-                         max_files=200, access=access)
+                         max_files=200, access=access, **preset)
     return JSONResponse({"token": token}, headers={"Cache-Control": "no-store"})
 
 
@@ -50,10 +58,13 @@ async def save_files(request):
     """The page reports uploaded files; keep only those the receipt proves are ours."""
     saved = []
     for item in (await request.json()).get("files", [])[:200]:
-        key, receipt = str(item.get("key", "")), str(item.get("receipt", ""))
-        if verify_receipt(key, USER_ID, receipt, CLIENT_SECRET):
-            OWNED_KEYS.add(key)
-            saved.append(key)
+        # The file itself and each of its sizes come with their own receipt.
+        refs = [item] + list((item.get("variants") or {}).values())
+        for ref in refs[:20]:
+            key, receipt = str(ref.get("key", "")), str(ref.get("receipt", ""))
+            if verify_receipt(key, USER_ID, receipt, CLIENT_SECRET):
+                OWNED_KEYS.add(key)
+                saved.append(key)
     return JSONResponse({"saved": saved})
 
 
