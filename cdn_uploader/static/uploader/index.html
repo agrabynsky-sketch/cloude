@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Загрузка файлов</title>
+  <link rel="stylesheet" href="uploader.css">
+  <script src="uploader.js" defer></script>
+</head>
+<body>
+  <main class="uploader" aria-labelledby="title">
+    <header class="head">
+      <h1 id="title" data-i18n="title">Загрузка файлов</h1>
+      <button type="button" class="icon-btn" id="close" data-i18n-label="close" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <div class="body">
+      <p class="state" id="state" role="status" data-i18n="connecting">Подключение…</p>
+
+      <section class="work" id="work" hidden>
+        <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="hint">
+          <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5l5 5M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+          <span class="drop-title" data-i18n="dropTitle">Перетащите файлы сюда</span>
+          <span class="drop-sub"><span data-i18n="or">или</span> <span class="link" data-i18n="browse">выберите на устройстве</span></span>
+          <span class="drop-hint" id="hint"></span>
+          <input type="file" id="picker" class="sr-only" tabindex="-1" multiple>
+        </div>
+        <p class="notice" id="notice" role="alert" hidden></p>
+        <ul class="files" id="files" aria-live="polite"></ul>
+      </section>
+    </div>
+
+    <footer class="foot">
+      <span class="summary" id="summary"></span>
+      <button type="button" class="btn secondary" id="cancel" data-i18n="cancel">Отмена</button>
+      <button type="button" class="btn primary" id="done" data-i18n="done" disabled>Готово</button>
+    </footer>
+  </main>
+</body>
+</html>

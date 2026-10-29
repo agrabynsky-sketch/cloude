@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Uploader demo</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
+    li { margin: 6px 0; word-break: break-all; }
+    code { font-size: 12px; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Демо: загрузка на CDN</h1>
+  <p>
+    <button id="all">Загрузить файлы</button>
+    <button id="images">Только изображения (1 файл)</button>
+  </p>
+  <ul id="result"></ul>
+
+  <script src="{{UPLOADER_URL}}/sdk/unit-uploader.js"></script>
+  <script>
+    const getToken = () =>
+      fetch('/api/cdn-upload-token', { method: 'POST' }).then(r => r.json()).then(j => j.token);
+
+    function show(files) {
+      const list = document.getElementById('result');
+      if (!files) { list.textContent = 'Отменено'; return; }
+      list.textContent = '';
+      for (const f of files) {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.textContent = f.name;          // never innerHTML: names come from users
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        const meta = document.createElement('code');
+        meta.textContent = ` ${f.mime}, ${f.size} B — ${f.url}`;
+        li.append(a, meta);
+        list.append(li);
+      }
+    }
+
+    document.getElementById('all').onclick = () =>
+      UnitUploader.open({ uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru' })
+        .then(show, err => alert(err.message));
+
+    document.getElementById('images').onclick = () =>
+      UnitUploader.open({
+        uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru',
+        types: ['image'], multiple: false, title: 'Фото паспорта',
+      }).then(show, err => alert(err.message));
+  </script>
+</body>
+</html>
