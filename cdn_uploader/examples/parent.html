@@ -16,6 +16,7 @@
   <p>
     <button id="all">Загрузить файлы</button>
     <button id="images">Только изображения (1 файл)</button>
+    <button id="videos">Только видео</button>
   </p>
   <ul id="result"></ul>
 
@@ -45,6 +46,12 @@
     document.getElementById('all').onclick = () =>
       UnitUploader.open({ uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru' })
         .then(show, err => alert(err.message));
+
+    document.getElementById('videos').onclick = () =>
+      UnitUploader.open({
+        uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru',
+        types: ['video'], title: 'Видео с поездки',
+      }).then(show, err => alert(err.message));
 
     document.getElementById('images').onclick = () =>
       UnitUploader.open({

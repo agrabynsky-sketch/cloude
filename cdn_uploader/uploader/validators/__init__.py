@@ -3,10 +3,14 @@
 Anything not listed here is rejected. Notably absent on purpose: SVG, HTML,
 XML, RTF, legacy .doc/.xls/.ppt, macro-enabled Office formats, rar/7z and
 every executable or script type.
+
+Videos are files on disk, not bytes in memory, so they go through
+video.process_video() instead of sanitize(); they are not accepted inside
+archives.
 """
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 from .archives import validate_tar, validate_tar_gz, validate_zip
 from .common import Budget, Context, Limits, Sanitized, ValidationError, looks_executable
@@ -14,13 +18,16 @@ from .images import sanitize_image
 from .office import validate_odf, validate_ooxml
 from .pdf import validate_pdf
 from .text import validate_csv, validate_text
+from .video import VideoSettings, process_video
 
 __all__ = [
-    "ALIASES", "FILE_TYPES", "Limits", "Sanitized", "ValidationError",
-    "extension_of", "new_context", "sanitize",
+    "ALIASES", "CATEGORIES", "FILE_TYPES", "Limits", "Sanitized", "ValidationError",
+    "VideoSettings", "extension_of", "new_context", "process_video", "sanitize",
 ]
 
-CATEGORIES = ("image", "document", "archive")
+CATEGORIES = ("image", "document", "archive", "video")
+# Categories handled in memory by sanitize() (and so allowed inside archives).
+BYTES_CATEGORIES = ("image", "document", "archive")
 
 
 @dataclass(frozen=True)
@@ -28,7 +35,7 @@ class FileType:
     ext: str
     mime: str
     category: str
-    handler: Callable
+    handler: Optional[Callable]  # None for videos (see process_video)
 
 
 def _image(ext):
@@ -65,9 +72,13 @@ FILE_TYPES = {
         FileType("zip", "application/zip", "archive", validate_zip),
         FileType("tar", "application/x-tar", "archive", validate_tar),
         FileType("tar.gz", "application/gzip", "archive", validate_tar_gz),
+        FileType("mp4", "video/mp4", "video", None),
+        FileType("mov", "video/quicktime", "video", None),
+        FileType("webm", "video/webm", "video", None),
+        FileType("mkv", "video/x-matroska", "video", None),
     )
 }
-ALIASES = {"jpeg": "jpg", "tgz": "tar.gz"}
+ALIASES = {"jpeg": "jpg", "tgz": "tar.gz", "m4v": "mp4"}
 
 
 def extension_of(filename):
@@ -86,11 +97,11 @@ def new_context(limits):
     return Context(limits=limits, budget=Budget(limits.max_uncompressed))
 
 
-def sanitize(filename, data, ctx, categories=CATEGORIES):
+def sanitize(filename, data, ctx, categories=BYTES_CATEGORIES):
     """Validate one file and return what may be stored. Raises ValidationError."""
     ext = extension_of(filename)
     ftype = FILE_TYPES.get(ext)
-    if ftype is None or ftype.category not in categories:
+    if ftype is None or ftype.handler is None or ftype.category not in categories:
         shown = f".{ext}" if ext else "without extension"
         ctx.fail("type_not_allowed", f"File type {shown} is not allowed")
     if not data:

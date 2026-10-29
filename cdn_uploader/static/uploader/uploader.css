@@ -10,6 +10,7 @@
   --ok: #1a7f37;
   --error: #c62828;
   --error-soft: #fdecec;
+  --warn: #9a6700;
   --radius: 10px;
   color-scheme: light;
 }
@@ -27,11 +28,14 @@
     --ok: #3fb950;
     --error: #ff6b6b;
     --error-soft: #3a1f22;
+    --warn: #d29922;
     color-scheme: dark;
   }
 }
 
 * { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
 
 html, body {
   height: 100%;
@@ -78,7 +82,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: 26px 16px;
+  padding: 24px 16px;
   border: 1.5px dashed var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -95,6 +99,28 @@ body {
 
 .drop.disabled { opacity: .55; cursor: not-allowed; }
 
+.drop-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Once files are listed the zone shrinks to one row to leave room for the list. */
+.drop.compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.drop.compact .drop-icon { width: 24px; height: 24px; margin: 0; flex: none; }
+.drop.compact .drop-text { align-items: flex-start; gap: 0; }
+.drop.compact .drop-title { font-size: 14px; }
+.drop.compact .drop-hint { margin-top: 2px; }
+.drop.compact .hint-types { display: none; }
+
 .drop-icon {
   width: 30px;
   height: 30px;
@@ -108,16 +134,75 @@ body {
 
 .drop-title { font-weight: 600; font-size: 15px; }
 .drop-sub { color: var(--muted); }
-.drop-hint { color: var(--muted); font-size: 12px; margin-top: 6px; max-width: 460px; }
-.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.drop-hint { color: var(--muted); font-size: 12px; margin-top: 6px; max-width: 480px; }
+
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.link:disabled { color: var(--muted); cursor: not-allowed; }
 
 .notice {
   margin: 10px 0 0;
   padding: 8px 12px;
   border-radius: 8px;
-  background: var(--error-soft);
-  color: var(--error);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
 }
+
+.overview {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.overview-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.overall { font-weight: 600; }
+.rate { color: var(--muted); white-space: nowrap; }
+
+.bar.total { height: 6px; margin-top: 8px; border-radius: 3px; }
+
+.overview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overview-actions:has(.chip:not([hidden])) { margin-top: 8px; }
+
+.chip {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip:hover, .chip:focus-visible { border-color: var(--accent); outline: none; }
 
 .files {
   list-style: none;
@@ -155,7 +240,7 @@ body {
   text-transform: uppercase;
 }
 
-.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; }
 
 .meta { flex: 1; min-width: 0; }
 
@@ -169,6 +254,7 @@ body {
 .sub { color: var(--muted); font-size: 12px; }
 .file[data-state="done"] .status { color: var(--ok); }
 .file[data-state="error"] .status { color: var(--error); }
+.file[data-state="waiting"] .status { color: var(--warn); }
 
 .bar {
   height: 3px;
@@ -186,7 +272,8 @@ body {
   transition: width .2s;
 }
 
-.file:not([data-state="uploading"]):not([data-state="queued"]) .bar { display: none; }
+.file[data-state="done"] .bar, .file[data-state="error"] .bar { display: none; }
+.file[data-state="processing"] .bar > span { background: var(--ok); }
 
 .icon-btn {
   flex: none;
@@ -254,5 +341,7 @@ body {
   .body { padding: 4px 16px 12px; }
   .foot { padding: 12px 16px 16px; }
   .summary { display: none; }
+  .drop.compact .drop-hint { display: none; }
+  .overview-row { flex-direction: column; gap: 2px; }
   .btn { flex: 1; }
 }

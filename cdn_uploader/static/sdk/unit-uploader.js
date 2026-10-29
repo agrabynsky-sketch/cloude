@@ -10,6 +10,9 @@
  *     maxFiles: 10,                     // optional
  *     onFileUploaded: (file) => {},     // optional, fires per stored file
  *   });
+ *
+ * With getToken the uploader can also ask for a fresh token when a long
+ * batch (many files, big videos) outlives the first one.
  *   // files: [{ url, name, size, mime, ext, category, hash }]  or  null if cancelled
  *
  * The token is minted by your backend (it holds the shared secret) and is
@@ -134,10 +137,16 @@
               token: token,
               options: {
                 lang: options.lang, title: options.title, types: options.types,
-                maxFiles: options.maxFiles, multiple: options.multiple
+                maxFiles: options.maxFiles, multiple: options.multiple,
+                refreshable: typeof options.getToken === 'function'
               }
             });
           }).catch(function (err) { cleanup(); reject(err); });
+        } else if (msg.type === 'token-request' && initSent && typeof options.getToken === 'function') {
+          Promise.resolve().then(options.getToken).then(function (token) {
+            if (typeof token !== 'string' || !token) throw new Error('empty token');
+            post({ type: 'token', token: token });
+          }).catch(function () { post({ type: 'token-error' }); });
         } else if (msg.type === 'uploaded') {
           var file = safeFile(msg.file, cdnBaseUrl);
           if (file) call(options.onFileUploaded, file);

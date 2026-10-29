@@ -22,6 +22,7 @@ CLIENT_ID = os.environ.get("DEMO_CLIENT_ID", "demo")
 CLIENT_SECRET = os.environ.get("DEMO_CLIENT_SECRET", "")
 ORIGIN = os.environ.get("DEMO_ORIGIN", "http://localhost:8001")
 UPLOADER_URL = os.environ.get("DEMO_UPLOADER_URL", "http://localhost:8000").rstrip("/")
+TOKEN_TTL = int(os.environ.get("DEMO_TOKEN_TTL", "900"))
 PAGE = Path(__file__).with_name("parent.html").read_text(encoding="utf-8")
 
 
@@ -32,7 +33,7 @@ async def index(request):
 async def upload_token(request):
     # In a real app: check the user's session/CSRF here and decide what this
     # user may upload (types, max_files) before minting the token.
-    token = create_token(CLIENT_ID, CLIENT_SECRET, ORIGIN, ttl=900, subject="demo-user", max_files=10)
+    token = create_token(CLIENT_ID, CLIENT_SECRET, ORIGIN, ttl=TOKEN_TTL, subject="demo-user", max_files=200)
     return JSONResponse({"token": token}, headers={"Cache-Control": "no-store"})
 
 

@@ -33,11 +33,17 @@ class ClamdScanner:
 
     def scan(self, data):
         """Return the signature name if infected, None if clean."""
+        return self._scan(data[i:i + CHUNK] for i in range(0, len(data), CHUNK))
+
+    def scan_file(self, path):
+        with open(path, "rb") as fh:
+            return self._scan(iter(lambda: fh.read(CHUNK), b""))
+
+    def _scan(self, chunks):
         try:
             with self._connect() as sock:
                 sock.sendall(b"zINSTREAM\0")
-                for i in range(0, len(data), CHUNK):
-                    chunk = data[i:i + CHUNK]
+                for chunk in chunks:
                     sock.sendall(struct.pack("!L", len(chunk)) + chunk)
                 sock.sendall(struct.pack("!L", 0))
                 reply = b""

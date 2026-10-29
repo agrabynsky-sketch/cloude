@@ -1,4 +1,6 @@
 import json
+import shutil
+import time
 from urllib.parse import quote
 
 import pytest
@@ -14,16 +16,30 @@ SECRET = "test-secret-" + "x" * 32
 ORIGIN = "http://localhost:8001"
 
 
-@pytest.fixture
-def settings(tmp_path):
-    return load_settings({
+HAS_FFMPEG = bool(shutil.which("ffmpeg"))
+needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not installed")
+
+
+def make_settings(tmp_path, **extra):
+    env = {
         "UPLOADER_HASH_KEY": "k" * 40,
         "UPLOADER_CLIENTS": json.dumps({"demo": {"secret": SECRET, "origins": [ORIGIN]}}),
         "UPLOADER_STORAGE_DIR": str(tmp_path / "f"),
         "UPLOADER_CDN_BASE_URL": "https://cdn.unit.travel/f",
         "UPLOADER_MAX_FILE_MB": "2",
+        "UPLOADER_MAX_VIDEO_MB": "5",
+        "UPLOADER_VIDEO_MODE": "transcode" if HAS_FFMPEG else "off",
+        "UPLOADER_VIDEO_MAX_SIDE": "160",
+        "UPLOADER_VIDEO_THREADS": "2",
         "UPLOADER_SERVE_FILES": "1",
-    })
+    }
+    env.update(extra)
+    return load_settings(env)
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return make_settings(tmp_path)
 
 
 @pytest.fixture
@@ -149,3 +165,80 @@ def test_sdk_served(client):
     res = client.get("/sdk/unit-uploader.js")
     assert res.status_code == 200
     assert "UnitUploader" in res.text
+
+
+def wait_for_job(client, job_id, headers, timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/v1/jobs/{job_id}", headers=headers).json()
+        if body["status"] in ("done", "error"):
+            return body
+        time.sleep(0.1)
+    raise AssertionError("job did not finish")
+
+
+@needs_ffmpeg
+def test_video_upload_runs_as_job_and_returns_link(client, tmp_path):
+    clip = samples.video(tmp_path / "trip.mov", "mov", extra=["-metadata", "title=secret"])
+    headers = auth(subject="u1")
+    res = put(client, "Поездка.mov", clip.read_bytes(), headers)
+    assert res.status_code == 202, res.text
+    body = wait_for_job(client, res.json()["job"], headers)
+    assert body["status"] == "done", body
+    file = body["file"]
+    assert file["ext"] == "mp4" and file["mime"] == "video/mp4" and file["category"] == "video"
+    assert file["url"].endswith(f"/{file['hash']}.mp4")
+    served = client.get("/f/" + file["url"].split("/f/", 1)[1])
+    assert served.headers["content-type"] == "video/mp4"
+    assert "content-disposition" not in served.headers
+    assert b"secret" not in served.content
+
+
+@needs_ffmpeg
+def test_job_visible_only_to_its_owner(client, tmp_path):
+    clip = samples.video(tmp_path / "a.mp4")
+    job_id = put(client, "a.mp4", clip.read_bytes(), auth(subject="u1")).json()["job"]
+    assert client.get(f"/api/v1/jobs/{job_id}", headers=auth(subject="u2")).status_code == 404
+    # A refreshed token for the same user still sees it.
+    assert wait_for_job(client, job_id, auth(subject="u1"))["status"] == "done"
+
+
+@needs_ffmpeg
+def test_invalid_video_fails_job_and_frees_the_slot(client):
+    headers = auth(max_files=1, subject="u1")
+    res = put(client, "fake.mp4", samples.png(), headers)
+    assert res.status_code == 202
+    body = wait_for_job(client, res.json()["job"], headers)
+    assert (body["status"], body["error"]) == ("error", "content_mismatch")
+    assert put(client, "a.txt", b"ok", headers).status_code == 201
+
+
+@needs_ffmpeg
+def test_video_size_limit_is_separate(client):
+    assert put(client, "big.mp4", b"\0" * (5 * 1024 * 1024 + 1), auth()).status_code == 413
+    assert put(client, "big.txt", b"a" * (3 * 1024 * 1024), auth()).status_code == 413
+
+
+@needs_ffmpeg
+def test_session_reports_video_limits(client):
+    body = client.get("/api/v1/session", headers=auth()).json()
+    assert "video" in body["types"] and body["extensions"]["mov"] == "video"
+    assert body["max_sizes"]["video"] == 5 * 1024 * 1024
+    assert body["max_sizes"]["image"] == 2 * 1024 * 1024
+
+
+def test_video_can_be_disabled(tmp_path):
+    client = TestClient(create_app(make_settings(tmp_path, UPLOADER_VIDEO_MODE="off")))
+    body = client.get("/api/v1/session", headers=auth()).json()
+    assert "video" not in body["types"] and "mp4" not in body["extensions"]
+    assert put(client, "a.mp4", b"\0" * 100, auth()).status_code == 415
+
+
+def test_rate_limit_tells_client_when_to_retry(tmp_path):
+    client = TestClient(create_app(make_settings(tmp_path, UPLOADER_RATE_LIMIT_PER_MINUTE="2")))
+    headers = auth()
+    put(client, "a.txt", b"1", headers)
+    put(client, "b.txt", b"2", headers)
+    res = put(client, "c.txt", b"3", headers)
+    assert res.status_code == 429 and res.json()["error"] == "rate_limited"
+    assert int(res.headers["retry-after"]) > 0

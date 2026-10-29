@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -27,22 +28,21 @@ class Storage:
 
     def relative_path(self, data, ext):
         digest = hmac.new(self.hash_key, data, hashlib.sha256).hexdigest()
-        return digest, f"{digest[:2]}/{digest[2:4]}/{digest}.{ext}"
+        return digest, self._paths(digest, ext)[0]
 
     def url(self, rel):
         return f"{self.base_url}/{rel}"
 
-    def save(self, data, ext):
-        """Store `data`; returns (digest, relative path). Idempotent."""
-        digest, rel = self.relative_path(data, ext)
-        target = self.root / rel
-        if target.exists():
-            return digest, rel
+    def _paths(self, digest, ext):
+        rel = f"{digest[:2]}/{digest[2:4]}/{digest}.{ext}"
+        return rel, self.root / rel
+
+    def _write(self, target, write):
         target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".upload-")
         try:
             with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
+                write(fh)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.chmod(tmp, 0o644)
@@ -53,6 +53,32 @@ class Storage:
             except FileNotFoundError:
                 pass
             raise
+
+    def save(self, data, ext):
+        """Store `data`; returns (digest, relative path). Idempotent."""
+        digest, rel = self.relative_path(data, ext)
+        target = self.root / rel
+        if not target.exists():
+            self._write(target, lambda fh: fh.write(data))
+        return digest, rel
+
+    def save_file(self, src, ext):
+        """Store the file at `src` (consumed: moved when possible)."""
+        mac = hmac.new(self.hash_key, digestmod=hashlib.sha256)
+        with open(src, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                mac.update(chunk)
+        digest = mac.hexdigest()
+        rel, target = self._paths(digest, ext)
+        if target.exists():
+            return digest, rel
+        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        os.chmod(src, 0o644)
+        try:
+            os.replace(src, target)  # same filesystem: atomic and free
+        except OSError:
+            with open(src, "rb") as fh:
+                self._write(target, lambda out: shutil.copyfileobj(fh, out, 1024 * 1024))
         return digest, rel
 
     def resolve(self, rel):

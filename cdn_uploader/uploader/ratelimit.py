@@ -32,6 +32,14 @@ class RateLimiter:
         events.append(now)
         return True
 
+    def retry_after(self, key, now=None):
+        """Whole seconds until `key` gets a free slot again."""
+        now = time.monotonic() if now is None else now
+        events = self._events.get(key)
+        if not events or len(events) < self.limit:
+            return 1
+        return max(1, int(events[0] + self.window - now) + 1)
+
     def _evict(self, now):
         for key in [k for k, ev in self._events.items() if not ev or ev[-1] <= now - self.window]:
             del self._events[key]

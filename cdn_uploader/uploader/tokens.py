@@ -9,7 +9,7 @@ Payload fields:
     jti        random id, used to count files uploaded with the token  required
     sub        opaque user id, only logged                             optional
     max_files  files allowed per token (capped by the server)          optional
-    types      subset of ["image", "document", "archive"]              optional
+    types      subset of ["image", "document", "archive", "video"]     optional
 
 The token is minted by the parent app's *server* (the secret never reaches
 a browser). It is easy to produce in any language; see README.md.
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 MAX_TOKEN_LENGTH = 2048
 B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?$")
-CATEGORIES = ("image", "document", "archive")
+CATEGORIES = ("image", "document", "archive", "video")
 
 
 class TokenError(Exception):

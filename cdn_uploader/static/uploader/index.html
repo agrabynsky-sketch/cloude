@@ -17,26 +17,50 @@
       </button>
     </header>
 
-    <div class="body">
+    <div class="body" id="scroller">
       <p class="state" id="state" role="status" data-i18n="connecting">Подключение…</p>
 
       <section class="work" id="work" hidden>
-        <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="hint">
+        <div class="drop" id="drop">
           <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5l5 5M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
-          <span class="drop-title" data-i18n="dropTitle">Перетащите файлы сюда</span>
-          <span class="drop-sub"><span data-i18n="or">или</span> <span class="link" data-i18n="browse">выберите на устройстве</span></span>
-          <span class="drop-hint" id="hint"></span>
+          <div class="drop-text">
+            <span class="drop-title" data-i18n="dropTitle">Перетащите файлы или папки сюда</span>
+            <span class="drop-sub">
+              <span data-i18n="or">или</span>
+              <button type="button" class="link" id="pickFiles" data-i18n="browseFiles">выберите файлы</button>
+              <span id="folderChoice"><span data-i18n="orFolder">или</span>
+                <button type="button" class="link" id="pickFolder" data-i18n="browseFolder">папку</button></span>
+            </span>
+            <span class="drop-hint" id="hint"></span>
+          </div>
           <input type="file" id="picker" class="sr-only" tabindex="-1" multiple>
+          <input type="file" id="folderPicker" class="sr-only" tabindex="-1" multiple webkitdirectory>
         </div>
-        <p class="notice" id="notice" role="alert" hidden></p>
-        <ul class="files" id="files" aria-live="polite"></ul>
+
+        <p class="notice" id="notice" role="status" hidden></p>
+
+        <div class="overview" id="overview" hidden>
+          <div class="overview-row">
+            <span class="overall" id="overall"></span>
+            <span class="rate" id="rate"></span>
+          </div>
+          <div class="bar total" id="totalBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="totalFill"></span>
+          </div>
+          <div class="overview-actions">
+            <button type="button" class="chip" id="retryAll" hidden></button>
+            <button type="button" class="chip" id="clearErrors" hidden></button>
+          </div>
+        </div>
+
+        <ul class="files" id="files"></ul>
       </section>
     </div>
 
     <footer class="foot">
-      <span class="summary" id="summary"></span>
+      <span class="summary" id="summary" aria-live="polite"></span>
       <button type="button" class="btn secondary" id="cancel" data-i18n="cancel">Отмена</button>
-      <button type="button" class="btn primary" id="done" data-i18n="done" disabled>Готово</button>
+      <button type="button" class="btn primary" id="done" disabled>Готово</button>
     </footer>
   </main>
 </body>

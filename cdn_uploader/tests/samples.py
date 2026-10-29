@@ -143,3 +143,21 @@ def tar_gz(entries, symlink=None):
             info.linkname = symlink[1]
             tf.addfile(info)
     return out.getvalue()
+
+
+def video(path, kind="mp4", seconds=2, size="320x240", extra=()):
+    """Render a test clip with ffmpeg (tests using it skip when ffmpeg is missing)."""
+    import subprocess
+    codecs = {
+        "mp4": ["-c:v", "libx264", "-c:a", "aac"],
+        "mov": ["-c:v", "libx264", "-c:a", "aac"],
+        "webm": ["-c:v", "libvpx-vp9", "-b:v", "200k", "-c:a", "libopus"],
+        "mkv": ["-c:v", "libx264", "-c:a", "aac"],
+        "mpeg2.mkv": ["-c:v", "mpeg2video", "-c:a", "mp2"],
+    }[kind]
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=25",
+         "-f", "lavfi", "-i", "sine=frequency=440", "-t", str(seconds), *codecs, *extra, str(path)],
+        check=True,
+    )
+    return path

@@ -14,11 +14,12 @@ ExecStart=/opt/unit-uploader/venv/bin/uvicorn --factory uploader.app:create_app 
 Restart=on-failure
 UMask=0022
 
-# Sandboxing: the service can write only to the storage directory.
+# Sandboxing: the service (and the ffmpeg it starts) can write only to the
+# storage directory and its temp directory.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/srv/unit-cdn/f
+ReadWritePaths=/srv/unit-cdn/f /srv/unit-cdn/tmp
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -37,8 +38,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 CapabilityBoundingSet=
 AmbientCapabilities=
-MemoryMax=2G
-TasksMax=64
+# ffmpeg gets its own RLIMIT_AS (UPLOADER_VIDEO_MEMORY_MB) per process.
+MemoryMax=6G
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target
