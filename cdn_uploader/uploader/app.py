@@ -190,11 +190,10 @@ def create_app(settings=None):
     settings.tmp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     _clean_tmp_dir(settings.tmp_dir)
 
-    frame_ancestors = " ".join(settings.parent_origins)
     ui_csp = (
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "
         "media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
-        f"frame-ancestors {frame_ancestors}"
+        "frame-ancestors {}"
     )
     ui_assets = {
         "index.html": ("text/html; charset=utf-8", STATIC_DIR / "uploader" / "index.html"),
@@ -256,14 +255,17 @@ def create_app(settings=None):
         client = settings.clients[claims.client_id]
         # The receipt lets the app's backend check the key really was uploaded by this user.
         ref = {"key": key, "receipt": receipt_for(key, claims.subject, client.secret)}
+        # A white-label client may serve files from its own domain.
+        public_base = client.cdn_base_url or settings.cdn_base_url
+        protected_base = client.protected_base_url or settings.protected_base_url
         if claims.access == "public":
-            ref["url"] = f"{settings.cdn_base_url}/{key[2:]}"
+            ref["url"] = f"{public_base}/{key[2:]}"
         elif claims.access == "signed":
-            ref["url"] = sign_link(key, claims.client_id, client.secret, settings.protected_base_url,
+            ref["url"] = sign_link(key, claims.client_id, client.secret, protected_base,
                                    ttl=settings.preview_link_ttl)
             ref["expires_at"] = int(time.time()) + settings.preview_link_ttl
         else:
-            ref["url"] = f"{settings.protected_base_url}/{key}"  # opens only with a read token
+            ref["url"] = f"{protected_base}/{key}"  # opens only with a read token
         return ref
 
     def describe_file(stored, digest, claims, name, ext, mime, category, size, original_size):
@@ -463,7 +465,12 @@ def create_app(settings=None):
         if asset is None:
             return Response("Not found", status_code=404, media_type="text/plain")
         mime, path = asset
-        headers = {"Content-Security-Policy": ui_csp, "Cache-Control": "no-cache"}
+        # Only the site that opens the dialog may frame it (the SDK passes its
+        # origin). Listing every registered site here would publish the list
+        # of white-label partners and grow with each of them.
+        parent = request.query_params.get("origin", "")
+        ancestors = parent.lower() if settings.clients.allows_any(parent) else "'none'"
+        headers = {"Content-Security-Policy": ui_csp.format(ancestors), "Cache-Control": "no-cache"}
         return FileResponse(path, media_type=mime, headers=headers)
 
     async def ui_redirect(request):
@@ -478,7 +485,7 @@ def create_app(settings=None):
 
     def cors(request, client, only=None):
         origin = request.headers.get("origin")
-        if origin and origin in client.origins and (only is None or origin == only):
+        if origin and client.allows(origin) and (only is None or origin == only):
             return {"Access-Control-Allow-Origin": origin, "Access-Control-Expose-Headers": EXPOSED_HEADERS,
                     "Vary": "Origin"}
         return {"Vary": "Origin"}
@@ -498,7 +505,7 @@ def create_app(settings=None):
             return error("not_found", "Not found", 404)
         if request.method == "OPTIONS":
             origin = request.headers.get("origin")
-            if origin not in client.origins:
+            if not client.allows(origin):
                 return Response(status_code=403, headers={"Vary": "Origin"})
             return Response(status_code=204, headers={
                 "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET, HEAD",
@@ -539,7 +546,7 @@ def create_app(settings=None):
             return response
         ftype = FILE_TYPES[extension_of(path.name)]
         headers.update(PROTECTED_HEADERS)
-        headers["Cross-Origin-Resource-Policy"] = settings.protected_corp
+        headers["Cross-Origin-Resource-Policy"] = client.corp or settings.protected_corp
         headers["Content-Disposition"] = disposition(
             ftype.category, clean_display_name(name) if name else path.name)
         log.info("read key=%s ip=%s via=%s", key, ip, via)

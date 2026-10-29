@@ -146,11 +146,15 @@ def test_file_route_rejects_anything_but_hash_paths(client, path):
 
 
 def test_uploader_page_csp(client):
-    res = client.get("/uploader/")
+    res = client.get("/uploader/", params={"origin": ORIGIN})
     assert res.status_code == 200
     csp = res.headers["content-security-policy"]
-    assert f"frame-ancestors {ORIGIN}" in csp
+    assert csp.endswith(f"frame-ancestors {ORIGIN}")
     assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+    # Unknown or missing parent: nobody may frame it.
+    for params in ({}, {"origin": "https://evil.example"}, {"origin": "https://x.com; script-src *"}):
+        assert client.get("/uploader/", params=params).headers["content-security-policy"].endswith(
+            "frame-ancestors 'none'")
     assert client.get("/uploader/../app.py").status_code == 404
     assert client.get("/uploader/secret.txt").status_code == 404
 

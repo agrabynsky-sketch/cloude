@@ -1,8 +1,12 @@
 """Settings, read from environment variables (see .env.example)."""
 
 import json
+import logging
 import os
+import re
 import shutil
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -13,6 +17,13 @@ from .validators import Limits, VideoSettings
 from .validators.common import MB
 
 
+log = logging.getLogger("uploader")
+
+# https://*.partner.travel matches any subdomain (not partner.travel itself).
+ORIGIN_PATTERN_RE = re.compile(r"^(https?)://\*\.([a-z0-9-]+(?:\.[a-z0-9-]+)+)(:\d{1,5})?$")
+CORP_VALUES = ("same-site", "same-origin", "cross-origin")
+
+
 class ConfigError(Exception):
     pass
 
@@ -20,13 +31,79 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Client:
     secret: str
-    origins: tuple
+    origins: tuple                   # exact origins and https://*.example.com patterns
     default_access: str = "public"   # used when an upload token has no "access"
+    corp: str = ""                   # Cross-Origin-Resource-Policy of protected files ("" = default)
+    cdn_base_url: str = ""           # own domain for public files, e.g. https://files.partner.com/f
+    protected_base_url: str = ""     # own domain for signed/private files
+
+    def allows(self, origin):
+        """Is `origin` one of this client's sites (exactly or through a *. pattern)?"""
+        if not isinstance(origin, str) or not ORIGIN_RE.match(origin):
+            return False
+        origin = origin.lower()
+        if origin in self.origins:
+            return True
+        scheme, _, rest = origin.partition("://")
+        host, _, port = rest.partition(":")
+        for pattern in self.origins:
+            m = ORIGIN_PATTERN_RE.match(pattern)
+            if m and m.group(1) == scheme and (m.group(3) or "") == (":" + port if port else "") \
+                    and host.endswith("." + m.group(2)):
+                return True
+        return False
+
+
+class ClientRegistry:
+    """The configured clients. With UPLOADER_CLIENTS_FILE the file is re-read
+    when it changes, so white-label domains can be added without a restart;
+    a broken file is logged and the previous clients stay in use."""
+
+    def __init__(self, env, check_every=5.0):
+        self._env = env
+        self._path = env.get("UPLOADER_CLIENTS_FILE") or None
+        self._check_every = check_every
+        self._lock = threading.Lock()
+        self._mtime = self._stat()
+        self._clients = _load_clients(env)
+        self._checked = time.monotonic()
+
+    def _stat(self):
+        try:
+            return os.stat(self._path).st_mtime_ns if self._path else None
+        except OSError:
+            return None
+
+    def _current(self):
+        if self._path and time.monotonic() - self._checked >= self._check_every:
+            with self._lock:
+                self._checked = time.monotonic()
+                mtime = self._stat()
+                if mtime != self._mtime:
+                    try:
+                        self._clients = _load_clients(self._env)
+                        log.info("reloaded %d clients from %s", len(self._clients), self._path)
+                    except (ConfigError, OSError, ValueError) as exc:
+                        log.error("keeping previous clients, %s is invalid: %s", self._path, exc)
+                    self._mtime = mtime
+        return self._clients
+
+    def get(self, client_id, default=None):
+        return self._current().get(client_id, default)
+
+    def __getitem__(self, client_id):
+        return self._current()[client_id]
+
+    def values(self):
+        return self._current().values()
+
+    def allows_any(self, origin):
+        return any(c.allows(origin) for c in self._current().values())
 
 
 @dataclass(frozen=True)
 class Settings:
-    clients: dict
+    clients: ClientRegistry
     hash_key: bytes
     storage_dir: Path
     cdn_base_url: str
@@ -48,10 +125,6 @@ class Settings:
     clamd_address: str = ""
     clamd_required: bool = True
     serve_files: bool = False
-
-    @property
-    def parent_origins(self):
-        return sorted({o for c in self.clients.values() for o in c.origins})
 
 
 def _int(env, name, default):
@@ -82,20 +155,30 @@ def _load_clients(env):
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ConfigError(f"UPLOADER_CLIENTS is not valid JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise ConfigError("UPLOADER_CLIENTS must be a JSON object")
     clients = {}
     for cid, spec in data.items():
         secret = spec.get("secret", "")
-        origins = tuple(spec.get("origins", ()))
+        origins = tuple(o.lower() for o in spec.get("origins", ()) if isinstance(o, str))
         access = spec.get("default_access", "public")
+        corp = spec.get("corp", "")
+        bases = {k: spec.get(k, "").rstrip("/") for k in ("cdn_base_url", "protected_base_url")}
         if not CLIENT_ID_RE.match(cid):
             raise ConfigError(f"Client id {cid!r} must match {CLIENT_ID_RE.pattern}")
         if access not in ACCESS_LEVELS:
             raise ConfigError(f"Client {cid!r}: default_access must be one of {ACCESS_LEVELS}")
+        if corp and corp not in CORP_VALUES:
+            raise ConfigError(f"Client {cid!r}: corp must be one of {CORP_VALUES}")
         if len(secret) < 32:
             raise ConfigError(f"Client {cid!r}: secret must be at least 32 characters")
-        if not origins or any(not ORIGIN_RE.match(o) for o in origins):
-            raise ConfigError(f"Client {cid!r}: origins must be like https://app.example.com")
-        clients[cid] = Client(secret=secret, origins=origins, default_access=access)
+        if not origins or any(not (ORIGIN_RE.match(o) or ORIGIN_PATTERN_RE.match(o)) for o in origins):
+            raise ConfigError(f"Client {cid!r}: origins must be like https://app.example.com "
+                              "or https://*.example.com")
+        for name, url in bases.items():
+            if url and not re.match(r"^https?://[a-z0-9.-]+(:\d{1,5})?(/[a-z0-9_./-]*)?$", url):
+                raise ConfigError(f"Client {cid!r}: {name} must be like https://files.example.com/f")
+        clients[cid] = Client(secret=secret, origins=origins, default_access=access, corp=corp, **bases)
     return clients
 
 
@@ -139,7 +222,7 @@ def load_settings(env=None):
     cdn_base_url = env.get("UPLOADER_CDN_BASE_URL", "https://cdn.unit.travel/f").rstrip("/")
     origin = urlsplit(cdn_base_url)
     corp = env.get("UPLOADER_PROTECTED_CORP", "same-site")
-    if corp not in ("same-site", "same-origin", "cross-origin"):
+    if corp not in CORP_VALUES:
         raise ConfigError("UPLOADER_PROTECTED_CORP must be same-site, same-origin or cross-origin")
     link_max_ttl = _int(env, "UPLOADER_LINK_MAX_TTL", 86400)
     preview_link_ttl = _int(env, "UPLOADER_PREVIEW_LINK_TTL", 600)
@@ -149,7 +232,7 @@ def load_settings(env=None):
     if accel and not (accel.startswith("/") and accel.endswith("/")):
         raise ConfigError("UPLOADER_ACCEL_REDIRECT must look like /_protected/")
     return Settings(
-        clients=_load_clients(env),
+        clients=ClientRegistry(env, check_every=float(env.get("UPLOADER_CLIENTS_RELOAD_SECONDS", "5"))),
         hash_key=hash_key.encode("utf-8"),
         storage_dir=storage_dir,
         cdn_base_url=cdn_base_url,

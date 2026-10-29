@@ -296,7 +296,9 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
         raise TokenError("token_expired", "Token has expired")
     if exp - now > max_ttl:
         raise TokenError("invalid_token", "Token lifetime is too long")
-    if not isinstance(origin, str) or not ORIGIN_RE.match(origin) or origin not in client.origins:
+    allows = getattr(client, "allows", None)
+    if (not isinstance(origin, str) or not ORIGIN_RE.match(origin)
+            or not (allows(origin) if allows else origin in client.origins)):
         raise TokenError("origin_not_allowed", "Token origin is not allowed for this client")
     if not isinstance(jti, str) or not 8 <= len(jti) <= 128:
         raise TokenError("invalid_token", "Token has no id")

@@ -11,6 +11,8 @@
  *     onLanguageChange: (lang) => {},   // optional: the user picked a language there
  *     translations: { pl: {...} },      // optional: extra languages / overridden strings
  *     title: { en: 'Passport', uk: 'Паспорт' },   // optional, string or per language
+ *     theme: { accent: '#e11d48', accentText: '#ffffff', radius: 12,   // optional: brand look
+ *              font: 'Inter', colorScheme: 'auto' },                // 'light' | 'dark' | 'auto'
  *     types: ['image', 'document'],     // optional, narrows what the token allows
  *     maxFiles: 10,                     // optional
  *     onFileUploaded: (file) => {},     // optional, fires per stored file
@@ -120,9 +122,16 @@
     var getToken = tokenSource(options);
     if (!getToken) return Promise.reject(new Error('UnitUploader: pass token or getToken'));
 
+    // The uploader lets only this page frame it (CSP frame-ancestors).
+    frameUrl.searchParams.set('origin', window.location.origin);
     var origin = frameUrl.origin;
     var cdnOrigin = options.cdnBaseUrl ? new URL(options.cdnBaseUrl, window.location.href).origin : '';
     var lang = String(options.lang || detectLang());
+
+    var theme = options.theme && typeof options.theme === 'object' ? options.theme : {};
+    var dark = theme.colorScheme === 'dark' || (theme.colorScheme !== 'light' &&
+      window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var radius = typeof theme.radius === 'number' ? Math.max(0, Math.min(theme.radius + 4, 28)) : 14;
 
     return new Promise(function (resolve, reject) {
       var small = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
@@ -133,8 +142,8 @@
       var dialog = css(document.createElement('div'), {
         width: small ? '100%' : 'min(640px, calc(100vw - 32px))',
         height: small ? '100%' : 'min(600px, calc(100vh - 32px))',
-        borderRadius: small ? '0' : '14px', overflow: 'hidden',
-        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)', background: '#fff'
+        borderRadius: small ? '0' : radius + 'px', overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)', background: dark ? '#17191e' : '#fff'
       });
       var label = DIALOG_LABEL[lang.toLowerCase().split('-')[0]] || DIALOG_LABEL.en;
       dialog.setAttribute('role', 'dialog');
@@ -194,6 +203,7 @@
               token: token,
               options: {
                 lang: lang, languages: options.languages, translations: options.translations,
+                theme: options.theme,
                 title: options.title, types: options.types, maxFiles: options.maxFiles,
                 multiple: options.multiple, refreshable: typeof options.getToken === 'function'
               }
@@ -291,7 +301,7 @@
   var api = {
     open: open, close: close, setLang: setLang,
     fetchFile: fetchFile, fileUrl: fileUrl, download: download,
-    version: '1.2.0'
+    version: '1.3.0'
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;

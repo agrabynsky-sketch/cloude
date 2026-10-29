@@ -12,6 +12,7 @@
  *   -> cancel                    user closed the dialog
  *   -> error {code, message}     token rejected etc.
  *   <- set-lang {lang}           the app switched its language
+ *   init options.theme           brand colours / radius / font of a (white-label) site
  *   -> language {lang}           the user switched language in the dialog
  *
  * Results are only ever posted to the origin that the server confirmed is
@@ -233,6 +234,7 @@
     st.replyOrigin = origin;
     st.refreshable = options.refreshable === true;
     st.title = options.title || null;
+    applyTheme(options.theme);
     buildLocales(options.translations);
     setupLanguageSwitcher(options.languages);
     applyLang(options.lang);
@@ -245,6 +247,32 @@
       fatal('sessionFailed', code);
       send('error', { code: code, message: errorText(code) });
     });
+  }
+
+  // Brand look of the site that opened the dialog. Every value is checked
+  // strictly, so a theme can only change colours, corners and the font.
+  function applyTheme(theme) {
+    if (!theme || typeof theme !== 'object') return;
+    var root = document.documentElement;
+    var hex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+    if (theme.colorScheme === 'light' || theme.colorScheme === 'dark') {
+      root.setAttribute('data-theme', theme.colorScheme);
+    }
+    if (hex.test(theme.accent)) {
+      var c = theme.accent.length === 4
+        ? theme.accent.replace(/^#(.)(.)(.)$/, '#$1$1$2$2$3$3') : theme.accent;
+      var rgb = [1, 3, 5].map(function (i) { return parseInt(c.substr(i, 2), 16); });
+      root.style.setProperty('--accent', c);
+      root.style.setProperty('--accent-soft', 'rgba(' + rgb.join(',') + ',0.12)');
+    }
+    if (hex.test(theme.accentText)) root.style.setProperty('--accent-text', theme.accentText);
+    if (typeof theme.radius === 'number' && theme.radius >= 0 && theme.radius <= 24) {
+      root.style.setProperty('--radius', theme.radius + 'px');
+      root.style.setProperty('--radius-sm', Math.max(theme.radius - 2, 0) + 'px');
+    }
+    if (typeof theme.font === 'string' && /^[A-Za-z0-9 ,'"-]{1,120}$/.test(theme.font)) {
+      root.style.setProperty('--font', theme.font + ', system-ui, sans-serif');
+    }
   }
 
   // Optional language menu inside the dialog (options.languages: true or ['en', 'uk']).
