@@ -1,63 +1,115 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Uploader demo</title>
   <style>
-    body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
-    button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 0; background: #1f6feb; color: #fff; cursor: pointer; }
-    li { margin: 6px 0; word-break: break-all; }
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+    button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #1f6feb; color: #fff; cursor: pointer; margin: 0 6px 6px 0; }
+    button.small { padding: 2px 10px; font-size: 13px; background: #eef2f7; color: #1f2937; }
+    select { font: inherit; padding: 4px 8px; }
+    li { margin: 8px 0; word-break: break-all; }
     code { font-size: 12px; color: #555; }
+    .tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: #eef2f7; margin-left: 6px; }
+    #preview img { max-width: 100%; max-height: 260px; margin-top: 12px; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <h1>Демо: загрузка на CDN</h1>
+  <h1>Uploader demo</h1>
   <p>
-    <button id="all">Загрузить файлы</button>
-    <button id="images">Только изображения (1 файл)</button>
-    <button id="videos">Только видео</button>
+    Language:
+    <select id="lang">
+      <option value="en">English</option>
+      <option value="uk">Українська</option>
+      <option value="ru">Русский</option>
+    </select>
+  </p>
+  <p>
+    <button id="all">Files (public)</button>
+    <button id="visa">Visa (temporary links)</button>
+    <button id="passport">Passport (private, only in this app)</button>
+    <button id="videos">Videos</button>
   </p>
   <ul id="result"></ul>
+  <div id="preview"></div>
 
   <script src="{{UPLOADER_URL}}/sdk/unit-uploader.js"></script>
   <script>
-    const getToken = () =>
-      fetch('/api/cdn-upload-token', { method: 'POST' }).then(r => r.json()).then(j => j.token);
+    const post = (url, body) => fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+    }).then(r => r.json());
+    const uploadToken = access => () => post('/api/cdn-upload-token?access=' + access).then(j => j.token);
+
+    // The app's language switch: <html lang> is the SDK's default, setLang follows changes live.
+    const langSelect = document.getElementById('lang');
+    langSelect.onchange = () => {
+      document.documentElement.lang = langSelect.value;
+      UnitUploader.setLang(langSelect.value);
+    };
+
+    function open(access, extra) {
+      return UnitUploader.open(Object.assign({
+        uploaderUrl: '{{UPLOADER_URL}}/uploader/',
+        getToken: uploadToken(access),
+        languages: ['en', 'uk', 'ru'],
+        onLanguageChange: lang => { langSelect.value = lang; document.documentElement.lang = lang; },
+      }, extra)).then(async files => {
+        if (files) await post('/api/files', { files: files.map(f => ({ key: f.key, receipt: f.receipt })) });
+        show(files);
+      }, err => alert(err.message));
+    }
+
+    async function view(file) {
+      const box = document.getElementById('preview');
+      box.textContent = '';
+      let src;
+      if (file.access === 'signed') {
+        src = (await post('/api/cdn-link', { key: file.key })).url;   // temporary link from our backend
+      } else if (file.access === 'private') {
+        src = await UnitUploader.fileUrl(file.url, {                    // read token in a header
+          getToken: () => post('/api/cdn-read-token', { keys: [file.key] }).then(j => j.token),
+        });
+      } else {
+        src = file.url;
+      }
+      if (file.category === 'image') {
+        const img = document.createElement('img');
+        img.src = src;
+        box.append(img);
+      } else {
+        window.open(src, '_blank', 'noopener');
+      }
+    }
 
     function show(files) {
       const list = document.getElementById('result');
-      if (!files) { list.textContent = 'Отменено'; return; }
+      if (!files) { list.textContent = 'Cancelled'; return; }
       list.textContent = '';
       for (const f of files) {
         const li = document.createElement('li');
-        const a = document.createElement('a');
-        a.href = f.url;
-        a.textContent = f.name;          // never innerHTML: names come from users
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
+        const name = document.createElement('strong');
+        name.textContent = f.name;                 // never innerHTML: names come from users
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = f.access;
+        const btn = document.createElement('button');
+        btn.className = 'small';
+        btn.textContent = 'Open';
+        btn.onclick = () => view(f).catch(e => alert(e.code + ': ' + e.message));
         const meta = document.createElement('code');
-        meta.textContent = ` ${f.mime}, ${f.size} B — ${f.url}`;
-        li.append(a, meta);
+        meta.textContent = ` ${f.mime}, ${f.size} B — key ${f.key}`;
+        li.append(name, tag, ' ', btn, meta);
         list.append(li);
       }
     }
 
-    document.getElementById('all').onclick = () =>
-      UnitUploader.open({ uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru' })
-        .then(show, err => alert(err.message));
-
-    document.getElementById('videos').onclick = () =>
-      UnitUploader.open({
-        uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru',
-        types: ['video'], title: 'Видео с поездки',
-      }).then(show, err => alert(err.message));
-
-    document.getElementById('images').onclick = () =>
-      UnitUploader.open({
-        uploaderUrl: '{{UPLOADER_URL}}/uploader/', getToken, lang: 'ru',
-        types: ['image'], multiple: false, title: 'Фото паспорта',
-      }).then(show, err => alert(err.message));
+    document.getElementById('all').onclick = () => open('public');
+    document.getElementById('visa').onclick = () =>
+      open('signed', { types: ['image', 'document'], title: { en: 'Visa', uk: 'Віза', ru: 'Виза' } });
+    document.getElementById('passport').onclick = () =>
+      open('private', { types: ['image', 'document'], title: { en: 'Passport', uk: 'Паспорт', ru: 'Паспорт' } });
+    document.getElementById('videos').onclick = () => open('public', { types: ['video'] });
   </script>
 </body>
 </html>

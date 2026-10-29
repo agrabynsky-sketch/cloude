@@ -62,9 +62,43 @@ body {
 }
 
 .head h1 {
+  flex: 1;
   margin: 0;
   font-size: 17px;
   font-weight: 600;
+}
+
+.lang-select {
+  height: 30px;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.lang-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.access-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.access-note svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: var(--accent);
 }
 
 .body {

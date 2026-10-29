@@ -1,32 +1,49 @@
 /*
- * UnitUploader SDK: opens the cdn.unit.travel uploader in a modal iframe.
+ * UnitUploader SDK: opens the cdn.unit.travel uploader in a modal iframe,
+ * and opens protected ("private") files for the app.
  *
  *   const files = await UnitUploader.open({
  *     uploaderUrl: 'https://cdn.unit.travel/uploader/',
  *     getToken: () => fetch('/api/cdn-upload-token', { method: 'POST' })
  *                       .then(r => r.json()).then(j => j.token),
- *     lang: 'ru',                       // ru | uk | en
+ *     lang: 'uk',                       // default: <html lang> of the page, then the browser, then 'en'
+ *     languages: ['en', 'uk', 'ru'],    // optional: language menu inside the dialog
+ *     onLanguageChange: (lang) => {},   // optional: the user picked a language there
+ *     translations: { pl: {...} },      // optional: extra languages / overridden strings
+ *     title: { en: 'Passport', uk: 'Паспорт' },   // optional, string or per language
  *     types: ['image', 'document'],     // optional, narrows what the token allows
  *     maxFiles: 10,                     // optional
  *     onFileUploaded: (file) => {},     // optional, fires per stored file
  *   });
+ *   // files: [{ key, access, url, expires_at?, receipt, name, size, mime, ext, category, hash }]
+ *   //        or null if cancelled
  *
+ *   UnitUploader.setLang('ru');          // follow the app's language switch while open
+ *
+ *   // "private" files open only with a read token minted by the app backend:
+ *   const blobUrl = await UnitUploader.fileUrl(file.url, { getToken });  // for <img>, <iframe>
+ *   await UnitUploader.download(file.url, { getToken, filename: 'passport.pdf' });
+ *
+ * Tokens are minted by your backend (it holds the shared secret) and are
+ * only handed over via postMessage or a request header, never put in a URL.
  * With getToken the uploader can also ask for a fresh token when a long
  * batch (many files, big videos) outlives the first one.
- *   // files: [{ url, name, size, mime, ext, category, hash }]  or  null if cancelled
- *
- * The token is minted by your backend (it holds the shared secret) and is
- * only handed to the iframe via postMessage, never put in a URL.
  */
 (function (root) {
   'use strict';
 
   var HOST = 'unit-uploader-host';
   var GUEST = 'unit-uploader';
+  var DIALOG_LABEL = { en: 'Upload files', uk: 'Завантаження файлів', ru: 'Загрузка файлов' };
+  var ACCESS = { 'public': 1, signed: 1, 'private': 1 };
   var current = null;
 
   function isLocalHost(hostname) {
     return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  }
+
+  function isSafeUrl(url) {
+    return url.protocol === 'https:' || (url.protocol === 'http:' && isLocalHost(url.hostname));
   }
 
   function css(el, styles) {
@@ -34,14 +51,28 @@
     return el;
   }
 
-  function safeFile(f, cdnBaseUrl) {
+  function detectLang() {
+    return document.documentElement.lang || (navigator.languages && navigator.languages[0]) ||
+      navigator.language || 'en';
+  }
+
+  function tokenSource(options) {
+    if (typeof options.getToken === 'function') return options.getToken;
+    if (typeof options.token === 'string') return function () { return options.token; };
+    return null;
+  }
+
+  // Only well-formed results from our own iframe reach the app.
+  function safeFile(f, cdnOrigin) {
     if (!f || typeof f !== 'object' || typeof f.url !== 'string') return null;
     var url;
     try { url = new URL(f.url); } catch (e) { return null; }
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLocalHost(url.hostname))) return null;
-    if (cdnBaseUrl && url.href.indexOf(cdnBaseUrl.replace(/\/?$/, '/')) !== 0) return null;
-    return {
+    if (!isSafeUrl(url) || (cdnOrigin && url.origin !== cdnOrigin)) return null;
+    var out = {
+      key: /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31})\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.[a-z0-9.]{2,6}$/.test(f.key) ? f.key : '',
+      access: ACCESS[f.access] ? f.access : 'public',
       url: url.href,
+      receipt: /^[A-Za-z0-9_-]{20,100}$/.test(f.receipt) ? f.receipt : '',
       name: String(f.name || ''),
       size: Number(f.size) || 0,
       mime: String(f.mime || ''),
@@ -49,6 +80,8 @@
       category: String(f.category || ''),
       hash: /^[0-9a-f]{64}$/.test(f.hash) ? f.hash : ''
     };
+    if (typeof f.expires_at === 'number') out.expires_at = f.expires_at;
+    return out;
   }
 
   function open(options) {
@@ -58,15 +91,13 @@
     try { frameUrl = new URL(options.uploaderUrl, window.location.href); } catch (e) {
       return Promise.reject(new Error('UnitUploader: invalid uploaderUrl'));
     }
-    if (frameUrl.protocol !== 'https:' && !(frameUrl.protocol === 'http:' && isLocalHost(frameUrl.hostname))) {
-      return Promise.reject(new Error('UnitUploader: uploaderUrl must use https'));
-    }
-    var getToken = typeof options.getToken === 'function' ? options.getToken
-      : typeof options.token === 'string' ? function () { return options.token; } : null;
+    if (!isSafeUrl(frameUrl)) return Promise.reject(new Error('UnitUploader: uploaderUrl must use https'));
+    var getToken = tokenSource(options);
     if (!getToken) return Promise.reject(new Error('UnitUploader: pass token or getToken'));
 
     var origin = frameUrl.origin;
-    var cdnBaseUrl = options.cdnBaseUrl || '';
+    var cdnOrigin = options.cdnBaseUrl ? new URL(options.cdnBaseUrl, window.location.href).origin : '';
+    var lang = String(options.lang || detectLang());
 
     return new Promise(function (resolve, reject) {
       var small = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
@@ -80,14 +111,15 @@
         borderRadius: small ? '0' : '14px', overflow: 'hidden',
         boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)', background: '#fff'
       });
+      var label = DIALOG_LABEL[lang.toLowerCase().split('-')[0]] || DIALOG_LABEL.en;
       dialog.setAttribute('role', 'dialog');
       dialog.setAttribute('aria-modal', 'true');
-      dialog.setAttribute('aria-label', options.title || 'Upload files');
+      dialog.setAttribute('aria-label', label);
 
       var frame = css(document.createElement('iframe'), {
         width: '100%', height: '100%', border: '0', display: 'block'
       });
-      frame.title = options.title || 'Upload files';
+      frame.title = label;
       frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
       frame.setAttribute('referrerpolicy', 'no-referrer');
       frame.src = frameUrl.href;
@@ -136,9 +168,9 @@
               type: 'init',
               token: token,
               options: {
-                lang: options.lang, title: options.title, types: options.types,
-                maxFiles: options.maxFiles, multiple: options.multiple,
-                refreshable: typeof options.getToken === 'function'
+                lang: lang, languages: options.languages, translations: options.translations,
+                title: options.title, types: options.types, maxFiles: options.maxFiles,
+                multiple: options.multiple, refreshable: typeof options.getToken === 'function'
               }
             });
           }).catch(function (err) { cleanup(); reject(err); });
@@ -147,12 +179,14 @@
             if (typeof token !== 'string' || !token) throw new Error('empty token');
             post({ type: 'token', token: token });
           }).catch(function () { post({ type: 'token-error' }); });
+        } else if (msg.type === 'language' && typeof msg.lang === 'string') {
+          call(options.onLanguageChange, msg.lang);
         } else if (msg.type === 'uploaded') {
-          var file = safeFile(msg.file, cdnBaseUrl);
+          var file = safeFile(msg.file, cdnOrigin);
           if (file) call(options.onFileUploaded, file);
         } else if (msg.type === 'complete') {
           var files = (Array.isArray(msg.files) ? msg.files : [])
-            .map(function (f) { return safeFile(f, cdnBaseUrl); })
+            .map(function (f) { return safeFile(f, cdnOrigin); })
             .filter(Boolean);
           cleanup();
           resolve(files);
@@ -164,7 +198,10 @@
         }
       }
 
-      current = { close: function () { cleanup(); resolve(null); } };
+      current = {
+        close: function () { cleanup(); resolve(null); },
+        setLang: function (l) { if (initSent) post({ type: 'set-lang', lang: String(l) }); }
+      };
       window.addEventListener('message', onMessage);
       document.addEventListener('keydown', onKey, true);
       document.documentElement.style.overflow = 'hidden';
@@ -177,7 +214,60 @@
     if (current) current.close();
   }
 
-  var api = { open: open, close: close, version: '1.0.0' };
+  function setLang(lang) {
+    if (current) current.setLang(lang);
+  }
+
+  // ---- protected files --------------------------------------------------
+
+  // Fetch a "private" (or "signed") file with a read token in the
+  // Authorization header. Resolves to a Blob; rejects with err.code set.
+  function fetchFile(url, options) {
+    options = options || {};
+    var getToken = tokenSource(options);
+    var target;
+    try { target = new URL(url, window.location.href); } catch (e) {
+      return Promise.reject(new Error('UnitUploader: invalid file url'));
+    }
+    if (!isSafeUrl(target)) return Promise.reject(new Error('UnitUploader: file url must use https'));
+    return Promise.resolve().then(getToken || function () { return ''; }).then(function (token) {
+      var headers = {};
+      if (token) headers.Authorization = 'Bearer ' + token;
+      return fetch(target.href, { headers: headers, credentials: 'omit', mode: 'cors', cache: 'no-store' });
+    }).then(function (res) {
+      if (res.ok) return res.blob();
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        var err = new Error(body.message || 'Could not open the file (' + res.status + ')');
+        err.code = body.error || 'http_' + res.status;
+        err.status = res.status;
+        throw err;
+      });
+    });
+  }
+
+  // Object URL for <img>, <video>, <iframe>; call URL.revokeObjectURL when done.
+  function fileUrl(url, options) {
+    return fetchFile(url, options).then(function (blob) { return URL.createObjectURL(blob); });
+  }
+
+  function download(url, options) {
+    options = options || {};
+    return fetchFile(url, options).then(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = String(options.filename || url.split('/').pop().split('?')[0]);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+    });
+  }
+
+  var api = {
+    open: open, close: close, setLang: setLang,
+    fetchFile: fetchFile, fileUrl: fileUrl, download: download,
+    version: '1.1.0'
+  };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;
 })(typeof window !== 'undefined' ? window : this);

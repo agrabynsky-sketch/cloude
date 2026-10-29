@@ -11,6 +11,8 @@
  *   -> complete {files}          user pressed "Done"
  *   -> cancel                    user closed the dialog
  *   -> error {code, message}     token rejected etc.
+ *   <- set-lang {lang}           the app switched its language
+ *   -> language {lang}           the user switched language in the dialog
  *
  * Results are only ever posted to the origin that the server confirmed is
  * bound to the token. User-controlled strings are rendered with textContent.
@@ -34,181 +36,9 @@
   var ACTIVE = { queued: 1, uploading: 1, processing: 1, waiting: 1 };
   var JUNK = /^(\.|__macosx$|thumbs\.db$|desktop\.ini$)/i;
 
-  var I18N = {
-    ru: {
-      title: 'Загрузка файлов', close: 'Закрыть', connecting: 'Подключение…',
-      dropTitle: 'Перетащите файлы или папки сюда', or: 'или', orFolder: 'или',
-      browseFiles: 'выберите файлы', browseFolder: 'папку',
-      cancel: 'Отмена', done: 'Готово', remove: 'Удалить', retry: 'Повторить',
-      hint: 'До {size} на файл. Можно добавить ещё: {left}.',
-      hintVideo: 'До {size} на файл, видео до {vsize}. Можно добавить ещё: {left}.',
-      groups: { image: 'Изображения', document: 'Документы', archive: 'Архивы', video: 'Видео' },
-      queued: 'В очереди', uploading: 'Загрузка {p}%', checking: 'Проверка…',
-      processing: 'Обработка видео {p}%', jobQueued: 'Ожидает обработки',
-      waiting: 'повтор через {s} с', uploaded: 'Готово',
-      overallDone: 'Готово {done} из {total}', overallErrors: 'ошибок: {n}',
-      bytes: '{loaded} из {total}', speed: '{speed}/с', eta: 'осталось ~{t}',
-      allDone: 'Все файлы загружены', refreshing: 'Обновление сессии…',
-      waitingAll: 'ждут повтора: {n} · через {s} с',
-      retryAll: 'Повторить неудачные ({n})', clearErrors: 'Убрать ошибки ({n})',
-      skippedType: 'Пропущено файлов неподдерживаемых типов: {n}.',
-      skippedDup: 'Уже в списке: {n}.', limitReached: 'Лимит {n} файлов: остальные не добавлены.',
-      sec: 'с', min: 'мин', hour: 'ч',
-      notEmbedded: 'Эта страница открывается только из приложения.', sessionFailed: 'Не удалось начать загрузку',
-      errors: {
-        type_not_allowed: 'Этот тип файлов не разрешён',
-        file_too_large: 'Файл слишком большой',
-        empty_file: 'Файл пустой',
-        content_mismatch: 'Содержимое не соответствует расширению файла',
-        active_content: 'Файл содержит скрипты, макросы или другое активное содержимое',
-        invalid_image: 'Изображение повреждено',
-        image_too_large: 'Слишком большое разрешение изображения',
-        invalid_pdf: 'PDF повреждён или не может быть проверен',
-        invalid_archive: 'Архив повреждён',
-        invalid_text: 'Текст должен быть в кодировке UTF-8',
-        invalid_video: 'Видео повреждено или не поддерживается',
-        unsupported_codec: 'Формат видео не поддерживается',
-        video_too_long: 'Видео слишком длинное',
-        video_too_large: 'Слишком большое разрешение видео',
-        video_timeout: 'Видео обрабатывалось слишком долго',
-        unsafe_path: 'Архив содержит небезопасные пути или ссылки',
-        encrypted: 'Файлы с паролем не принимаются',
-        archive_too_many_entries: 'В архиве слишком много файлов',
-        archive_nesting: 'Слишком много вложенных архивов',
-        too_large_uncompressed: 'Архив распаковывается в слишком большой объём',
-        malware_detected: 'Обнаружено вредоносное ПО',
-        file_limit_reached: 'Достигнут лимит файлов',
-        rate_limited: 'Слишком много запросов',
-        busy: 'Сервер занят обработкой видео',
-        invalid_token: 'Сессия загрузки недействительна',
-        token_expired: 'Сессия загрузки истекла, откройте окно заново',
-        origin_not_allowed: 'Загрузка с этого сайта не разрешена',
-        origin_mismatch: 'Загрузка с этого сайта не разрешена',
-        antivirus_unavailable: 'Проверка временно недоступна',
-        client_disconnected: 'Загрузка прервана',
-        internal_error: 'Ошибка сервера',
-        server_error: 'Ошибка сервера',
-        network: 'Ошибка сети',
-        unknown: 'Не удалось загрузить файл'
-      }
-    },
-    uk: {
-      title: 'Завантаження файлів', close: 'Закрити', connecting: 'Підключення…',
-      dropTitle: 'Перетягніть файли або папки сюди', or: 'або', orFolder: 'або',
-      browseFiles: 'оберіть файли', browseFolder: 'папку',
-      cancel: 'Скасувати', done: 'Готово', remove: 'Видалити', retry: 'Повторити',
-      hint: 'До {size} на файл. Можна додати ще: {left}.',
-      hintVideo: 'До {size} на файл, відео до {vsize}. Можна додати ще: {left}.',
-      groups: { image: 'Зображення', document: 'Документи', archive: 'Архіви', video: 'Відео' },
-      queued: 'У черзі', uploading: 'Завантаження {p}%', checking: 'Перевірка…',
-      processing: 'Обробка відео {p}%', jobQueued: 'Очікує обробки',
-      waiting: 'повтор через {s} с', uploaded: 'Готово',
-      overallDone: 'Готово {done} з {total}', overallErrors: 'помилок: {n}',
-      bytes: '{loaded} з {total}', speed: '{speed}/с', eta: 'залишилось ~{t}',
-      allDone: 'Усі файли завантажено', refreshing: 'Оновлення сесії…',
-      waitingAll: 'чекають повтору: {n} · через {s} с',
-      retryAll: 'Повторити невдалі ({n})', clearErrors: 'Прибрати помилки ({n})',
-      skippedType: 'Пропущено файлів непідтримуваних типів: {n}.',
-      skippedDup: 'Вже у списку: {n}.', limitReached: 'Ліміт {n} файлів: решту не додано.',
-      sec: 'с', min: 'хв', hour: 'год',
-      notEmbedded: 'Ця сторінка відкривається лише із застосунку.', sessionFailed: 'Не вдалося почати завантаження',
-      errors: {
-        type_not_allowed: 'Цей тип файлів не дозволено',
-        file_too_large: 'Файл завеликий',
-        empty_file: 'Файл порожній',
-        content_mismatch: 'Вміст не відповідає розширенню файлу',
-        active_content: 'Файл містить скрипти, макроси або інший активний вміст',
-        invalid_image: 'Зображення пошкоджене',
-        image_too_large: 'Завелика роздільна здатність зображення',
-        invalid_pdf: 'PDF пошкоджений або не може бути перевірений',
-        invalid_archive: 'Архів пошкоджений',
-        invalid_text: 'Текст має бути в кодуванні UTF-8',
-        invalid_video: 'Відео пошкоджене або не підтримується',
-        unsupported_codec: 'Формат відео не підтримується',
-        video_too_long: 'Відео задовге',
-        video_too_large: 'Завелика роздільна здатність відео',
-        video_timeout: 'Відео оброблялося занадто довго',
-        unsafe_path: 'Архів містить небезпечні шляхи або посилання',
-        encrypted: 'Файли з паролем не приймаються',
-        archive_too_many_entries: 'В архіві забагато файлів',
-        archive_nesting: 'Забагато вкладених архівів',
-        too_large_uncompressed: 'Архів розпаковується у завеликий обсяг',
-        malware_detected: 'Виявлено шкідливе ПЗ',
-        file_limit_reached: 'Досягнуто ліміт файлів',
-        rate_limited: 'Забагато запитів',
-        busy: 'Сервер зайнятий обробкою відео',
-        invalid_token: 'Сесія завантаження недійсна',
-        token_expired: 'Сесія завантаження закінчилась, відкрийте вікно знову',
-        origin_not_allowed: 'Завантаження з цього сайту не дозволено',
-        origin_mismatch: 'Завантаження з цього сайту не дозволено',
-        antivirus_unavailable: 'Перевірка тимчасово недоступна',
-        client_disconnected: 'Завантаження перервано',
-        internal_error: 'Помилка сервера',
-        server_error: 'Помилка сервера',
-        network: 'Помилка мережі',
-        unknown: 'Не вдалося завантажити файл'
-      }
-    },
-    en: {
-      title: 'Upload files', close: 'Close', connecting: 'Connecting…',
-      dropTitle: 'Drag files or folders here', or: 'or', orFolder: 'or',
-      browseFiles: 'choose files', browseFolder: 'a folder',
-      cancel: 'Cancel', done: 'Done', remove: 'Remove', retry: 'Retry',
-      hint: 'Up to {size} per file. Files left: {left}.',
-      hintVideo: 'Up to {size} per file, videos up to {vsize}. Files left: {left}.',
-      groups: { image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video' },
-      queued: 'Queued', uploading: 'Uploading {p}%', checking: 'Checking…',
-      processing: 'Processing video {p}%', jobQueued: 'Waiting to be processed',
-      waiting: 'retrying in {s}s', uploaded: 'Done',
-      overallDone: '{done} of {total} done', overallErrors: 'errors: {n}',
-      bytes: '{loaded} of {total}', speed: '{speed}/s', eta: '~{t} left',
-      allDone: 'All files uploaded', refreshing: 'Refreshing session…',
-      waitingAll: 'waiting to retry: {n} · in {s}s',
-      retryAll: 'Retry failed ({n})', clearErrors: 'Clear errors ({n})',
-      skippedType: 'Skipped files of unsupported types: {n}.',
-      skippedDup: 'Already in the list: {n}.', limitReached: 'Limit of {n} files: the rest were not added.',
-      sec: 's', min: 'min', hour: 'h',
-      notEmbedded: 'This page can only be opened from the application.', sessionFailed: 'Could not start the upload',
-      errors: {
-        type_not_allowed: 'This file type is not allowed',
-        file_too_large: 'File is too large',
-        empty_file: 'File is empty',
-        content_mismatch: 'File content does not match its extension',
-        active_content: 'File contains scripts, macros or other active content',
-        invalid_image: 'Image is corrupt',
-        image_too_large: 'Image resolution is too large',
-        invalid_pdf: 'PDF is corrupt or cannot be checked',
-        invalid_archive: 'Archive is corrupt',
-        invalid_text: 'Text must be UTF-8 encoded',
-        invalid_video: 'Video is corrupt or not supported',
-        unsupported_codec: 'Video format is not supported',
-        video_too_long: 'Video is too long',
-        video_too_large: 'Video resolution is too large',
-        video_timeout: 'Video took too long to process',
-        unsafe_path: 'Archive contains unsafe paths or links',
-        encrypted: 'Password-protected files are not accepted',
-        archive_too_many_entries: 'Archive has too many files',
-        archive_nesting: 'Too many nested archives',
-        too_large_uncompressed: 'Archive expands to too much data',
-        malware_detected: 'Malware detected',
-        file_limit_reached: 'File limit reached',
-        rate_limited: 'Too many requests',
-        busy: 'Server is busy processing videos',
-        invalid_token: 'Upload session is invalid',
-        token_expired: 'Upload session expired, please reopen the dialog',
-        origin_not_allowed: 'Uploads from this site are not allowed',
-        origin_mismatch: 'Uploads from this site are not allowed',
-        antivirus_unavailable: 'Scanning is temporarily unavailable',
-        client_disconnected: 'Upload was interrupted',
-        internal_error: 'Server error',
-        server_error: 'Server error',
-        network: 'Network error',
-        unknown: 'Upload failed'
-      }
-    }
-  };
-
-  var t = I18N.ru;
+  var BASE = window.UNIT_UPLOADER_I18N || {};
+  var LOCALES = {};           // lang -> strings, English filled in for anything missing
+  var t = BASE.en;
   var $ = function (id) { return document.getElementById(id); };
   var els = {
     title: $('title'), state: $('state'), work: $('work'), drop: $('drop'), scroller: $('scroller'),
@@ -216,7 +46,8 @@
     pickFolder: $('pickFolder'), folderChoice: $('folderChoice'), hint: $('hint'), notice: $('notice'),
     overview: $('overview'), overall: $('overall'), rate: $('rate'), totalBar: $('totalBar'),
     totalFill: $('totalFill'), retryAll: $('retryAll'), clearErrors: $('clearErrors'),
-    files: $('files'), summary: $('summary'), cancel: $('cancel'), done: $('done'), close: $('close')
+    files: $('files'), summary: $('summary'), cancel: $('cancel'), done: $('done'), close: $('close'),
+    lang: $('lang'), accessNote: $('accessNote'), accessText: $('accessText')
   };
 
   var st = {
@@ -224,13 +55,16 @@
     replyOrigin: null,   // origin of the init message; only gets data-free messages
     origin: null,        // origin confirmed by the server for this token
     session: null,
-    lang: 'ru',
+    lang: 'en',
+    title: null,         // custom title: string, or {lang: string}
+    notice: [],          // [[key, values], ...] so it can be re-rendered in another language
+    fatal: null,
+    groups: {},          // category -> ["JPG", ...]
     refreshable: false,  // parent can mint a new token (SDK got getToken)
     refreshing: false,
     allowed: {},         // ext -> category
     maxSizes: {},        // category -> bytes
     limit: 0,
-    typesText: '',
     items: [],
     seen: {},            // duplicate detection
     nextId: 1,
@@ -248,11 +82,17 @@
   }
 
   function formatSize(bytes) {
-    var units = st.lang === 'en' ? ['B', 'KB', 'MB', 'GB'] : ['Б', 'КБ', 'МБ', 'ГБ'];
+    var units = t.units;
     var i = 0;
     while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
-    var n = i === 0 ? String(Math.round(bytes)) : bytes.toFixed(bytes < 10 ? 1 : 0);
-    return (st.lang === 'en' ? n : n.replace('.', ',')) + ' ' + units[i];
+    var digits = i > 0 && bytes < 10 ? 1 : 0;
+    var n;
+    try {
+      n = new Intl.NumberFormat(st.lang, { maximumFractionDigits: digits }).format(bytes);
+    } catch (e) {
+      n = bytes.toFixed(digits);
+    }
+    return n + ' ' + units[i];
   }
 
   function formatEta(seconds) {
@@ -278,21 +118,71 @@
     window.parent.postMessage(msg, target);
   }
 
+  // Strings from `over` that match the shape of `base` (English); nothing else.
+  function merge(base, over) {
+    var out = {};
+    Object.keys(base).forEach(function (k) {
+      var b = base[k], o = over && Object.prototype.hasOwnProperty.call(over, k) ? over[k] : undefined;
+      if (typeof b === 'string') {
+        out[k] = typeof o === 'string' && o.length <= 300 ? o : b;
+      } else if (Array.isArray(b)) {
+        out[k] = Array.isArray(o) && o.length === b.length &&
+          o.every(function (x) { return typeof x === 'string' && x.length <= 10; }) ? o.slice() : b;
+      } else {
+        out[k] = merge(b, o && typeof o === 'object' ? o : null);
+      }
+    });
+    return out;
+  }
+
+  function buildLocales(extra) {
+    extra = extra && typeof extra === 'object' ? extra : {};
+    var langs = Object.keys(BASE);
+    Object.keys(extra).forEach(function (l) {
+      if (/^[a-z]{2,3}(-[a-z0-9]{2,8})?$/.test(l) && langs.indexOf(l) === -1) langs.push(l);
+    });
+    langs.forEach(function (l) { LOCALES[l] = merge(merge(BASE.en, BASE[l]), extra[l]); });
+  }
+
+  // "uk-UA" -> "uk"; anything unknown -> English.
+  function resolveLang(lang) {
+    lang = String(lang || '').toLowerCase();
+    if (LOCALES[lang]) return lang;
+    var short = lang.split('-')[0];
+    return LOCALES[short] ? short : 'en';
+  }
+
   function applyLang(lang) {
-    st.lang = I18N[lang] ? lang : 'ru';
-    t = I18N[st.lang];
+    st.lang = resolveLang(lang);
+    t = LOCALES[st.lang];
     document.documentElement.lang = st.lang;
     var nodes = document.querySelectorAll('[data-i18n]');
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t[nodes[i].getAttribute('data-i18n')];
     nodes = document.querySelectorAll('[data-i18n-label]');
     for (i = 0; i < nodes.length; i++) nodes[i].setAttribute('aria-label', t[nodes[i].getAttribute('data-i18n-label')]);
-    document.title = t.title;
+    var title = st.title && typeof st.title === 'object' ? (st.title[st.lang] || st.title.en) : st.title;
+    els.title.textContent = typeof title === 'string' && title ? title.slice(0, 80) : t.title;
+    document.title = els.title.textContent;
+    els.lang.value = st.lang;
+    els.lang.setAttribute('aria-label', t.language);
+    if (st.session && st.session.access !== 'public') {
+      els.accessText.textContent = st.session.access === 'private' ? t.accessPrivate : t.accessSigned;
+    }
+    if (st.fatal) renderFatal();
+    renderNotice();
+    st.items.forEach(update);
+    refresh();
   }
 
-  function fatal(text) {
+  function fatal(key, code) {
+    st.fatal = { key: key, code: code };
+    renderFatal();
+  }
+
+  function renderFatal() {
     els.work.hidden = true;
     els.state.hidden = false;
-    els.state.textContent = text;
+    els.state.textContent = t[st.fatal.key] + (st.fatal.code ? ': ' + errorText(st.fatal.code) : '');
     els.state.classList.add('error');
     els.done.disabled = true;
   }
@@ -329,6 +219,8 @@
     if (!msg || typeof msg !== 'object' || msg.source !== HOST) return;
     if (msg.type === 'init' && !st.token && typeof msg.token === 'string') {
       start(msg.token, ev.origin, msg.options && typeof msg.options === 'object' ? msg.options : {});
+    } else if (msg.type === 'set-lang' && ev.origin === (st.origin || st.replyOrigin)) {
+      applyLang(msg.lang);
     } else if (msg.type === 'token' && st.refreshing && ev.origin === st.origin && typeof msg.token === 'string') {
       onFreshToken(msg.token);
     } else if (msg.type === 'token-error' && st.refreshing && ev.origin === st.origin) {
@@ -340,18 +232,37 @@
     st.token = token;
     st.replyOrigin = origin;
     st.refreshable = options.refreshable === true;
+    st.title = options.title || null;
+    buildLocales(options.translations);
+    setupLanguageSwitcher(options.languages);
     applyLang(options.lang);
-    if (typeof options.title === 'string' && options.title) {
-      els.title.textContent = options.title.slice(0, 80);
-    }
     fetchSession(token, origin).then(function (session) {
       st.origin = origin;
       st.session = session;
       setup(session, options);
     }).catch(function (err) {
       var code = (err && err.error) || 'network';
-      fatal(t.sessionFailed + ': ' + errorText(code));
+      fatal('sessionFailed', code);
       send('error', { code: code, message: errorText(code) });
+    });
+  }
+
+  // Optional language menu inside the dialog (options.languages: true or ['en', 'uk']).
+  function setupLanguageSwitcher(languages) {
+    if (!languages) return;
+    var list = Array.isArray(languages) ? languages.map(resolveLang) : Object.keys(LOCALES);
+    list = list.filter(function (l, i) { return list.indexOf(l) === i; });
+    if (list.length < 2) return;
+    list.forEach(function (l) {
+      var opt = document.createElement('option');
+      opt.value = l;
+      opt.textContent = LOCALES[l].langName;
+      els.lang.appendChild(opt);
+    });
+    els.lang.hidden = false;
+    els.lang.addEventListener('change', function () {
+      applyLang(els.lang.value);
+      send('language', { lang: st.lang });
     });
   }
 
@@ -381,13 +292,13 @@
       !(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
     els.folderChoice.hidden = !folders;
 
-    var groups = {};
     Object.keys(st.allowed).forEach(function (ext) {
-      (groups[st.allowed[ext]] = groups[st.allowed[ext]] || []).push(ext.toUpperCase());
+      (st.groups[st.allowed[ext]] = st.groups[st.allowed[ext]] || []).push(ext.toUpperCase());
     });
-    st.typesText = Object.keys(groups).map(function (g) {
-      return t.groups[g] + ': ' + groups[g].join(', ');
-    }).join('. ');
+    if (session.access && session.access !== 'public') {
+      els.accessText.textContent = session.access === 'private' ? t.accessPrivate : t.accessSigned;
+      els.accessNote.hidden = false;
+    }
 
     els.state.hidden = true;
     els.work.hidden = false;
@@ -402,7 +313,7 @@
     if (st.refreshing) return;
     if (!st.refreshable) { refreshFailed(); return; }
     st.refreshing = true;
-    showNotice(t.refreshing);
+    showNotice([['refreshing']]);
     send('token-request', {});
     st.refreshTimer = setTimeout(function () { if (st.refreshing) refreshFailed(); }, 30000);
   }
@@ -434,13 +345,18 @@
     return st.items.filter(function (it) { return it.status !== 'error'; }).length;
   }
 
-  function showNotice(text) {
-    els.notice.textContent = text;
-    els.notice.hidden = false;
+  function showNotice(parts) {
+    st.notice = parts;
+    renderNotice();
   }
 
   function hideNotice() {
-    els.notice.hidden = true;
+    showNotice([]);
+  }
+
+  function renderNotice() {
+    els.notice.textContent = st.notice.map(function (p) { return fmt(t[p[0]], p[1] || {}); }).join(' ');
+    els.notice.hidden = st.notice.length === 0;
   }
 
   // entries: [{file, path}]; fromFolder: silently skip junk and unsupported types.
@@ -469,10 +385,10 @@
       render(item);
     }
     var notes = [];
-    if (skippedType) notes.push(fmt(t.skippedType, { n: skippedType }));
-    if (skippedDup) notes.push(fmt(t.skippedDup, { n: skippedDup }));
-    if (overLimit) notes.push(fmt(t.limitReached, { n: st.limit }));
-    if (notes.length) showNotice(notes.join(' ')); else hideNotice();
+    if (skippedType) notes.push(['skippedType', { n: skippedType }]);
+    if (skippedDup) notes.push(['skippedDup', { n: skippedDup }]);
+    if (overLimit) notes.push(['limitReached', { n: st.limit }]);
+    showNotice(notes);
     pump();
     scheduleRefresh();
   }
@@ -645,7 +561,6 @@
   function setError(item, code, detail) {
     item.status = 'error';
     item.code = code;
-    item.error = errorText(code);
     item.detail = detail || '';
     item.retryable = !!RETRYABLE[code];
   }
@@ -683,11 +598,14 @@
   }
 
   function publicFile(body) {
-    return {
-      url: String(body.url), name: String(body.name || ''), size: Number(body.size) || 0,
+    var file = {
+      key: String(body.key || ''), access: String(body.access || 'public'), url: String(body.url),
+      receipt: String(body.receipt || ''), name: String(body.name || ''), size: Number(body.size) || 0,
       mime: String(body.mime || ''), ext: String(body.ext || ''),
       category: String(body.category || ''), hash: String(body.hash || '')
     };
+    if (typeof body.expires_at === 'number') file.expires_at = body.expires_at;
+    return file;
   }
 
   function removeItem(item) {
@@ -797,6 +715,7 @@
     item.statusEl = status;
     item.fillEl = fill;
     item.retryEl = retryBtn;
+    item.removeEl = removeBtn;
     update(item);
   }
 
@@ -820,11 +739,15 @@
       text = errorText(item.code) + ', ' +
         fmt(t.waiting, { s: Math.max(1, Math.ceil((item.retryAt - Date.now()) / 1000)) });
     } else if (item.status === 'done') text = t.uploaded;
-    else if (item.status === 'error') text = item.error;
+    else if (item.status === 'error') text = errorText(item.code);
     item.statusEl.textContent = text;
     item.statusEl.title = item.detail || '';
     item.fillEl.style.width = Math.round(itemProgress(item) * 100) + '%';
     item.retryEl.hidden = !(item.status === 'error' && item.retryable);
+    item.retryEl.setAttribute('aria-label', t.retry + ': ' + item.name);
+    item.retryEl.title = t.retry;
+    item.removeEl.setAttribute('aria-label', t.remove + ': ' + item.name);
+    item.removeEl.title = t.remove;
   }
 
   function sampleSpeed() {
@@ -901,7 +824,9 @@
         hint = t.hintVideo;
       }
       els.hint.textContent = fmt(hint, sizes) + ' ';
-      els.hintTypes.textContent = st.typesText;
+      els.hintTypes.textContent = Object.keys(st.groups).map(function (g) {
+        return t.groups[g] + ': ' + st.groups[g].join(', ');
+      }).join('. ');
       els.hint.appendChild(els.hintTypes);
     }
   }
@@ -982,8 +907,10 @@
   window.addEventListener('dragover', function (e) { e.preventDefault(); });
   window.addEventListener('drop', function (e) { e.preventDefault(); });
 
+  buildLocales(null);
+  applyLang(navigator.language);
   if (window.parent === window) {
-    fatal(t.notEmbedded);
+    fatal('notEmbedded');
     return;
   }
   window.addEventListener('message', onMessage);

@@ -1,35 +1,37 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>Загрузка файлов</title>
+  <title>Upload files</title>
   <link rel="stylesheet" href="uploader.css">
+  <script src="i18n.js" defer></script>
   <script src="uploader.js" defer></script>
 </head>
 <body>
   <main class="uploader" aria-labelledby="title">
     <header class="head">
-      <h1 id="title" data-i18n="title">Загрузка файлов</h1>
-      <button type="button" class="icon-btn" id="close" data-i18n-label="close" aria-label="Закрыть">
+      <h1 id="title">Upload files</h1>
+      <select id="lang" class="lang-select" hidden></select>
+      <button type="button" class="icon-btn" id="close" data-i18n-label="close" aria-label="Close">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </header>
 
     <div class="body" id="scroller">
-      <p class="state" id="state" role="status" data-i18n="connecting">Подключение…</p>
+      <p class="state" id="state" role="status" data-i18n="connecting">Connecting…</p>
 
       <section class="work" id="work" hidden>
         <div class="drop" id="drop">
           <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5l5 5M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
           <div class="drop-text">
-            <span class="drop-title" data-i18n="dropTitle">Перетащите файлы или папки сюда</span>
+            <span class="drop-title" data-i18n="dropTitle">Drag files or folders here</span>
             <span class="drop-sub">
-              <span data-i18n="or">или</span>
-              <button type="button" class="link" id="pickFiles" data-i18n="browseFiles">выберите файлы</button>
-              <span id="folderChoice"><span data-i18n="orFolder">или</span>
-                <button type="button" class="link" id="pickFolder" data-i18n="browseFolder">папку</button></span>
+              <span data-i18n="or">or</span>
+              <button type="button" class="link" id="pickFiles" data-i18n="browseFiles">choose files</button>
+              <span id="folderChoice"><span data-i18n="orFolder">or</span>
+                <button type="button" class="link" id="pickFolder" data-i18n="browseFolder">a folder</button></span>
             </span>
             <span class="drop-hint" id="hint"></span>
           </div>
@@ -37,6 +39,10 @@
           <input type="file" id="folderPicker" class="sr-only" tabindex="-1" multiple webkitdirectory>
         </div>
 
+        <p class="access-note" id="accessNote" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0110 0v3h1a1 1 0 011 1v10a1 1 0 01-1 1H6a1 1 0 01-1-1V11a1 1 0 011-1h1zm2 0h6V7a3 3 0 00-6 0v3z"/></svg>
+          <span id="accessText"></span>
+        </p>
         <p class="notice" id="notice" role="status" hidden></p>
 
         <div class="overview" id="overview" hidden>
@@ -59,8 +65,8 @@
 
     <footer class="foot">
       <span class="summary" id="summary" aria-live="polite"></span>
-      <button type="button" class="btn secondary" id="cancel" data-i18n="cancel">Отмена</button>
-      <button type="button" class="btn primary" id="done" disabled>Готово</button>
+      <button type="button" class="btn secondary" id="cancel" data-i18n="cancel">Cancel</button>
+      <button type="button" class="btn primary" id="done" disabled>Done</button>
     </footer>
   </main>
 </body>

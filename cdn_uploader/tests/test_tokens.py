@@ -69,3 +69,89 @@ def test_origin_must_be_registered_for_client():
 @pytest.mark.parametrize("token", ["", "abc", "a.b.c", "!!!.???", "x" * 5000])
 def test_garbage_rejected(token):
     assert code_of(token) == "invalid_token"
+
+
+# ---- read tokens, signed links, receipts -------------------------------------
+
+from uploader.tokens import (create_read_token, receipt_for, sign_link, verify_link,  # noqa: E402
+                             verify_receipt)
+
+KEY_S = "s/app/ab/cd/abcd" + "0" * 60 + ".pdf"
+KEY_P = "p/app/ab/cd/abcd" + "1" * 60 + ".jpg"
+
+
+def test_read_token_roundtrip_and_scope_separation():
+    read = create_read_token("app", SECRET, "https://app.unit.travel", [KEY_P])
+    claims = verify(read, scope="read")
+    assert claims.files == (KEY_P,) and claims.scope == "read"
+    # A read token cannot upload, an upload token cannot read.
+    assert code_of(read) == "invalid_token"
+    upload = create_token("app", SECRET, "https://app.unit.travel")
+    assert code_of(upload, scope="read") == "invalid_token"
+
+
+@pytest.mark.parametrize("files", [[], ["f/ab/cd/" + "0" * 64 + ".png"], ["p/other/ab/cd/" + "0" * 64 + ".png"],
+                                   [KEY_P] * 101, ["../../etc/passwd"]])
+def test_read_token_file_list_validated(files):
+    token = create_read_token("app", SECRET, "https://app.unit.travel", files)
+    assert code_of(token, scope="read") == "invalid_token"
+
+
+def test_upload_access_claim():
+    assert verify(create_token("app", SECRET, "https://app.unit.travel", access="private")).access == "private"
+    assert verify(create_token("app", SECRET, "https://app.unit.travel")).access == "public"
+    assert code_of(create_token("app", SECRET, "https://app.unit.travel", access="secret")) == "invalid_token"
+
+
+def _params(link):
+    from urllib.parse import parse_qsl, urlsplit
+    return dict(parse_qsl(urlsplit(link).query))
+
+
+def _link_code(key, params, ip="1.1.1.1", **kw):
+    with pytest.raises(TokenError) as info:
+        verify_link(key, CLIENTS["app"], params, ip, max_ttl=3600, **kw)
+    return info.value.code
+
+
+def test_signed_link_roundtrip_with_name():
+    link = sign_link(KEY_S, "app", SECRET, "https://cdn.unit.travel", ttl=60, name="Паспорт.pdf")
+    assert link.startswith("https://cdn.unit.travel/" + KEY_S + "?")
+    assert verify_link(KEY_S, CLIENTS["app"], _params(link), "1.1.1.1", max_ttl=3600) == "Паспорт.pdf"
+
+
+def test_signed_link_tampering_rejected():
+    params = _params(sign_link(KEY_S, "app", SECRET, "https://cdn", ttl=60))
+    assert _link_code(KEY_S.replace("abcd0", "abcd1"), params) == "invalid_link"      # other file
+    assert _link_code(KEY_S, {**params, "exp": str(int(params["exp"]) + 3600)}) == "invalid_link"
+    assert _link_code(KEY_S, {**params, "name": "x.exe"}) == "invalid_link"
+    assert _link_code(KEY_S, {**params, "sig": "A" * 43}) == "invalid_link"
+    assert _link_code(KEY_S, {"exp": params["exp"]}) == "invalid_link"
+
+
+def test_signed_link_expiry_and_max_ttl():
+    params = _params(sign_link(KEY_S, "app", SECRET, "https://cdn", ttl=60))
+    assert _link_code(KEY_S, params, now=int(time.time()) + 61) == "link_expired"
+    long = _params(sign_link(KEY_S, "app", SECRET, "https://cdn", ttl=7200))
+    assert _link_code(KEY_S, long) == "invalid_link"
+
+
+def test_ip_bound_link():
+    params = _params(sign_link(KEY_S, "app", SECRET, "https://cdn", ttl=60, ip="1.1.1.1"))
+    assert params["ip"] == "1" and "1.1.1.1" not in str(params)
+    assert verify_link(KEY_S, CLIENTS["app"], params, "1.1.1.1", max_ttl=3600) == ""
+    assert _link_code(KEY_S, params, ip="2.2.2.2") == "invalid_link"
+
+
+def test_links_only_for_own_signed_files():
+    with pytest.raises(ValueError):
+        sign_link(KEY_P, "app", SECRET, "https://cdn")          # private: token only
+    with pytest.raises(ValueError):
+        sign_link(KEY_S.replace("s/app", "s/other"), "app", SECRET, "https://cdn")
+
+
+def test_receipt():
+    r = receipt_for(KEY_P, "user-1", SECRET)
+    assert verify_receipt(KEY_P, "user-1", r, SECRET)
+    assert not verify_receipt(KEY_P, "user-2", r, SECRET)
+    assert not verify_receipt(KEY_S, "user-1", r, SECRET)

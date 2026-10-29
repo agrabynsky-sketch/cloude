@@ -6,8 +6,9 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
-from .tokens import ORIGIN_RE
+from .tokens import ACCESS_LEVELS, CLIENT_ID_RE, ORIGIN_RE
 from .validators import Limits, VideoSettings
 from .validators.common import MB
 
@@ -20,6 +21,7 @@ class ConfigError(Exception):
 class Client:
     secret: str
     origins: tuple
+    default_access: str = "public"   # used when an upload token has no "access"
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,12 @@ class Settings:
     cdn_base_url: str
     limits: Limits
     tmp_dir: Path
+    protected_dir: Path = Path("protected")      # files with access "signed"/"private"
+    protected_base_url: str = ""                 # https://cdn.unit.travel (keys are appended)
+    link_max_ttl: int = 86400                    # longest lifetime a signed link may have
+    preview_link_ttl: int = 600                  # signed link returned right after upload
+    accel_redirect: str = ""                     # e.g. /_protected/ : nginx sends the bytes
+    protected_corp: str = "same-site"            # Cross-Origin-Resource-Policy for them
     video: Optional[VideoSettings] = None   # None = videos disabled
     video_workers: int = 1
     video_queue: int = 20
@@ -78,11 +86,16 @@ def _load_clients(env):
     for cid, spec in data.items():
         secret = spec.get("secret", "")
         origins = tuple(spec.get("origins", ()))
+        access = spec.get("default_access", "public")
+        if not CLIENT_ID_RE.match(cid):
+            raise ConfigError(f"Client id {cid!r} must match {CLIENT_ID_RE.pattern}")
+        if access not in ACCESS_LEVELS:
+            raise ConfigError(f"Client {cid!r}: default_access must be one of {ACCESS_LEVELS}")
         if len(secret) < 32:
             raise ConfigError(f"Client {cid!r}: secret must be at least 32 characters")
         if not origins or any(not ORIGIN_RE.match(o) for o in origins):
             raise ConfigError(f"Client {cid!r}: origins must be like https://app.example.com")
-        clients[cid] = Client(secret=secret, origins=origins)
+        clients[cid] = Client(secret=secret, origins=origins, default_access=access)
     return clients
 
 
@@ -123,12 +136,31 @@ def load_settings(env=None):
         image_max_pixels=_int(env, "UPLOADER_IMAGE_MAX_PIXELS", 40_000_000),
     )
     storage_dir = Path(env.get("UPLOADER_STORAGE_DIR", "./data/f")).resolve()
+    cdn_base_url = env.get("UPLOADER_CDN_BASE_URL", "https://cdn.unit.travel/f").rstrip("/")
+    origin = urlsplit(cdn_base_url)
+    corp = env.get("UPLOADER_PROTECTED_CORP", "same-site")
+    if corp not in ("same-site", "same-origin", "cross-origin"):
+        raise ConfigError("UPLOADER_PROTECTED_CORP must be same-site, same-origin or cross-origin")
+    link_max_ttl = _int(env, "UPLOADER_LINK_MAX_TTL", 86400)
+    preview_link_ttl = _int(env, "UPLOADER_PREVIEW_LINK_TTL", 600)
+    if not 0 < preview_link_ttl <= link_max_ttl:
+        raise ConfigError("UPLOADER_PREVIEW_LINK_TTL must be between 1 and UPLOADER_LINK_MAX_TTL")
+    accel = env.get("UPLOADER_ACCEL_REDIRECT", "")
+    if accel and not (accel.startswith("/") and accel.endswith("/")):
+        raise ConfigError("UPLOADER_ACCEL_REDIRECT must look like /_protected/")
     return Settings(
         clients=_load_clients(env),
         hash_key=hash_key.encode("utf-8"),
         storage_dir=storage_dir,
-        cdn_base_url=env.get("UPLOADER_CDN_BASE_URL", "https://cdn.unit.travel/f").rstrip("/"),
+        cdn_base_url=cdn_base_url,
         limits=limits,
+        protected_dir=Path(env.get("UPLOADER_PROTECTED_DIR", storage_dir.parent / "protected")).resolve(),
+        protected_base_url=env.get("UPLOADER_PROTECTED_BASE_URL",
+                                   f"{origin.scheme}://{origin.netloc}").rstrip("/"),
+        link_max_ttl=link_max_ttl,
+        preview_link_ttl=preview_link_ttl,
+        accel_redirect=accel,
+        protected_corp=corp,
         # Next to the storage dir by default, so finished files are moved, not copied.
         tmp_dir=Path(env.get("UPLOADER_TMP_DIR", storage_dir.parent / "tmp")).resolve(),
         video=_load_video(env),

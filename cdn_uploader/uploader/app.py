@@ -9,7 +9,10 @@ Routes
     POST /api/v1/files         upload one file, raw body           (Bearer token)
                                201 + link, or 202 + job id for videos
     GET  /api/v1/jobs/<id>     progress / result of a video job    (Bearer token)
-    GET  /f/<hash path>        stored files, only if UPLOADER_SERVE_FILES=1 (dev);
+    GET  /s/<client>/<...>     "signed" files: ?exp=&sig= link, or a read token
+    GET  /p/<client>/<...>     "private" files: read token only (CORS for the client's origins)
+                               after the check nginx sends the bytes (X-Accel-Redirect)
+    GET  /f/<hash path>        public files, only if UPLOADER_SERVE_FILES=1 (dev);
                                in production nginx serves them, see deploy/
     GET  /healthz
 """
@@ -17,10 +20,11 @@ Routes
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -34,7 +38,8 @@ from .config import load_settings
 from .jobs import JobQueue
 from .ratelimit import RateLimiter, TokenUsage
 from .storage import Storage
-from .tokens import TokenError, verify_token
+from .tokens import (PROTECTED_KEY_RE, TokenError, receipt_for, sign_link, verify_link,
+                     verify_token)
 from .validators import (ALIASES, FILE_TYPES, ValidationError, extension_of, new_context,
                          process_video, sanitize)
 from .validators.common import clean_display_name
@@ -61,6 +66,13 @@ FILE_HEADERS = {
     "Cross-Origin-Resource-Policy": "cross-origin",
     "Cache-Control": "public, max-age=31536000, immutable",
 }
+PROTECTED_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Cache-Control": "private, no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Vary": "Origin",
+}
+EXPOSED_HEADERS = "Content-Disposition, Content-Length, Content-Range, Content-Type"
 
 
 class SecurityHeadersMiddleware:
@@ -166,10 +178,11 @@ def _clean_tmp_dir(directory, max_age=86400):
 def create_app(settings=None):
     settings = settings or load_settings()
     setup_logging()
-    storage = Storage(settings.storage_dir, settings.hash_key, settings.cdn_base_url)
+    storage = Storage(settings.storage_dir, settings.protected_dir, settings.hash_key)
     scanner = ClamdScanner(settings.clamd_address) if settings.clamd_address else None
     limiter = RateLimiter(settings.rate_limit_per_minute)
     poll_limiter = RateLimiter(settings.rate_limit_per_minute * 4)
+    read_limiter = RateLimiter(settings.rate_limit_per_minute * 4)
     usage = TokenUsage()
     cpu_slots = asyncio.Semaphore(settings.max_concurrent_jobs)
     video_jobs = JobQueue(settings.video_workers, settings.video_queue)
@@ -184,18 +197,19 @@ def create_app(settings=None):
     )
     ui_assets = {
         "index.html": ("text/html; charset=utf-8", STATIC_DIR / "uploader" / "index.html"),
+        "i18n.js": ("text/javascript; charset=utf-8", STATIC_DIR / "uploader" / "i18n.js"),
         "uploader.js": ("text/javascript; charset=utf-8", STATIC_DIR / "uploader" / "uploader.js"),
         "uploader.css": ("text/css; charset=utf-8", STATIC_DIR / "uploader" / "uploader.css"),
     }
     sdk_path = STATIC_DIR / "sdk" / "unit-uploader.js"
 
-    def authenticate(request):
+    def authenticate(request, scope="upload"):
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token:
             raise TokenError("invalid_token", "Missing bearer token")
         return verify_token(
-            token.strip(), settings.clients,
+            token.strip(), settings.clients, scope=scope,
             max_ttl=settings.token_max_ttl, max_files_cap=settings.max_files_per_token,
         )
 
@@ -217,11 +231,24 @@ def create_app(settings=None):
         # Jobs survive a token refresh: they belong to the client + user, not the token.
         return (claims.client_id, claims.subject, claims.origin)
 
-    def public_file(rel, digest, name, ext, mime, category, size, original_size):
-        return {
-            "url": storage.url(rel), "hash": digest, "name": name, "ext": ext, "mime": mime,
-            "category": category, "size": size, "original_size": original_size,
+    def describe_file(key, digest, claims, name, ext, mime, category, size, original_size):
+        """What the uploader hands to the application for one stored file."""
+        client = settings.clients[claims.client_id]
+        body = {
+            "key": key, "access": claims.access, "hash": digest, "name": name, "ext": ext,
+            "mime": mime, "category": category, "size": size, "original_size": original_size,
+            # Lets the app's backend check the key really was uploaded by this user.
+            "receipt": receipt_for(key, claims.subject, client.secret),
         }
+        if claims.access == "public":
+            body["url"] = f"{settings.cdn_base_url}/{key[2:]}"
+        elif claims.access == "signed":
+            body["url"] = sign_link(key, claims.client_id, client.secret, settings.protected_base_url,
+                                    ttl=settings.preview_link_ttl)
+            body["expires_at"] = int(time.time()) + settings.preview_link_ttl
+        else:
+            body["url"] = f"{settings.protected_base_url}/{key}"  # opens only with a read token
+        return body
 
     def rate_limited(rl, key):
         return error("rate_limited", "Too many requests", 429, retry_after=rl.retry_after(key))
@@ -244,11 +271,12 @@ def create_app(settings=None):
             "max_sizes": {t: max_size(t) for t in types},
             "types": types,
             "extensions": allowed_extensions(types),
+            "access": claims.access,
         }, headers=API_HEADERS)
 
-    def process(name, data, types):
+    def process(name, data, claims):
         """Blocking part of a regular upload: validate, scan, store. Runs in a thread."""
-        result = sanitize(name, data, new_context(settings.limits), categories=types)
+        result = sanitize(name, data, new_context(settings.limits), categories=claims.types)
         if scanner is not None:
             try:
                 # The upload (intent) and what will actually be stored.
@@ -262,8 +290,8 @@ def create_app(settings=None):
                 signature = None
             if signature:
                 raise ValidationError("malware_detected", f"File is infected ({signature})")
-        digest, rel = storage.save(result.data, result.ext)
-        return result, digest, rel
+        digest, key = storage.save(result.data, result.ext, claims.access, claims.client_id)
+        return result, digest, key
 
     def run_video(job, src, size, name, ext, claims, ip):
         """Background part of a video upload."""
@@ -284,7 +312,7 @@ def create_app(settings=None):
                 if signature:
                     raise ValidationError("malware_detected", f"File is infected ({signature})")
             stored_size = os.path.getsize(out)
-            digest, rel = storage.save_file(out, out_ext)
+            digest, key = storage.save_file(out, out_ext, claims.access, claims.client_id)
         except BaseException as exc:
             usage.release(claims.token_id)
             code = getattr(exc, "code", type(exc).__name__)
@@ -294,9 +322,9 @@ def create_app(settings=None):
         finally:
             _unlink(src)
             _unlink(out)
-        log.info("stored client=%s sub=%s ip=%s name=%r hash=%s ext=%s size=%d->%d",
-                 claims.client_id, claims.subject, ip, name, digest, out_ext, size, stored_size)
-        return public_file(rel, digest, name, out_ext, mime, "video", stored_size, size)
+        log.info("stored client=%s sub=%s ip=%s name=%r key=%s size=%d->%d",
+                 claims.client_id, claims.subject, ip, name, key, size, stored_size)
+        return describe_file(key, digest, claims, name, out_ext, mime, "video", stored_size, size)
 
     async def upload(request):
         ip = client_ip(request)
@@ -324,7 +352,7 @@ def create_app(settings=None):
         try:
             data = await read_body(request, settings.limits.max_file_size)
             async with cpu_slots:
-                result, digest, rel = await run_in_threadpool(process, name, data, claims.types)
+                result, digest, key = await run_in_threadpool(process, name, data, claims)
         except BodyTooLarge:
             usage.release(claims.token_id)
             return error("file_too_large", "File is too large", 413)
@@ -346,12 +374,11 @@ def create_app(settings=None):
             log.exception("upload failed name=%r", name)
             return error("internal_error", "Upload failed", 500)
 
-        log.info("stored client=%s sub=%s ip=%s name=%r hash=%s ext=%s size=%d->%d",
-                 claims.client_id, claims.subject, ip, name, digest, result.ext,
-                 len(data), len(result.data))
+        log.info("stored client=%s sub=%s ip=%s name=%r key=%s size=%d->%d",
+                 claims.client_id, claims.subject, ip, name, key, len(data), len(result.data))
         return JSONResponse(
-            public_file(rel, digest, name, result.ext, result.mime, result.category,
-                        len(result.data), len(data)),
+            describe_file(key, digest, claims, name, result.ext, result.mime, result.category,
+                          len(result.data), len(data)),
             status_code=201, headers=API_HEADERS)
 
     async def upload_video(request, claims, ip, name, ftype):
@@ -407,8 +434,81 @@ def create_app(settings=None):
             "Cache-Control": "public, max-age=300",
         })
 
+    def cors(request, client, only=None):
+        origin = request.headers.get("origin")
+        if origin and origin in client.origins and (only is None or origin == only):
+            return {"Access-Control-Allow-Origin": origin, "Access-Control-Expose-Headers": EXPOSED_HEADERS,
+                    "Vary": "Origin"}
+        return {"Vary": "Origin"}
+
+    def disposition(category, filename):
+        kind = "inline" if category in INLINE_CATEGORIES else "attachment"
+        fallback = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+        return f"{kind}; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+    async def protected_file(request):
+        """Serve a "signed" or "private" file after checking the link or read token."""
+        ip = client_ip(request)
+        key = request.url.path.lstrip("/")
+        match = PROTECTED_KEY_RE.match(key)
+        client = settings.clients.get(match.group(2)) if match else None
+        if client is None:
+            return error("not_found", "Not found", 404)
+        if request.method == "OPTIONS":
+            origin = request.headers.get("origin")
+            if origin not in client.origins:
+                return Response(status_code=403, headers={"Vary": "Origin"})
+            return Response(status_code=204, headers={
+                "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET, HEAD",
+                "Access-Control-Allow-Headers": "Authorization, Range", "Access-Control-Max-Age": "600",
+                "Vary": "Origin"})
+        if not read_limiter.allow(f"ip:{ip}"):
+            return rate_limited(read_limiter, f"ip:{ip}")
+
+        # Authorize first, look at the disk second: no probing which files exist.
+        name, via = "", "token"
+        if match.group(1) == "s" and "sig" in request.query_params:
+            via = "link"
+            try:
+                name = verify_link(key, client, request.query_params, ip, max_ttl=settings.link_max_ttl)
+            except TokenError as exc:
+                return error(exc.code, exc.message, 403)
+            headers = cors(request, client)
+        else:
+            headers = cors(request, client)
+            try:
+                claims = authenticate(request, scope="read")
+            except TokenError as exc:
+                response = token_error(exc)
+                response.headers.update(headers)
+                return response
+            origin = request.headers.get("origin")
+            if claims.client_id != match.group(2) or key not in claims.files or (
+                    origin and origin != claims.origin):
+                response = error("not_allowed", "This token does not grant access to the file", 403)
+                response.headers.update(headers)
+                return response
+            headers = cors(request, client, only=claims.origin)
+
+        path = storage.resolve(key)
+        if path is None:
+            response = error("not_found", "Not found", 404)
+            response.headers.update(headers)
+            return response
+        ftype = FILE_TYPES[extension_of(path.name)]
+        headers.update(PROTECTED_HEADERS)
+        headers["Cross-Origin-Resource-Policy"] = settings.protected_corp
+        headers["Content-Disposition"] = disposition(
+            ftype.category, clean_display_name(name) if name else path.name)
+        log.info("read key=%s ip=%s via=%s", key, ip, via)
+        if settings.accel_redirect:
+            # nginx streams the bytes (ranges, sendfile) from an internal location.
+            headers["X-Accel-Redirect"] = settings.accel_redirect + key
+            return Response(status_code=200, media_type=ftype.mime, headers=headers)
+        return FileResponse(path, media_type=ftype.mime, headers=headers)
+
     async def stored_file(request):
-        path = storage.resolve(request.path_params["path"])
+        path = storage.resolve("f/" + request.path_params["path"])
         if path is None:
             return Response("Not found", status_code=404, media_type="text/plain")
         ext = extension_of(path.name)
@@ -430,6 +530,8 @@ def create_app(settings=None):
         Route("/uploader/{asset:str}", ui_asset, methods=["GET"]),
         Route("/sdk/unit-uploader.js", sdk, methods=["GET"]),
         Route("/healthz", healthz, methods=["GET"]),
+        Route("/s/{rest:path}", protected_file, methods=["GET", "HEAD", "OPTIONS"]),
+        Route("/p/{rest:path}", protected_file, methods=["GET", "HEAD", "OPTIONS"]),
     ]
     if settings.serve_files:
         routes.append(Route("/f/{path:path}", stored_file, methods=["GET"]))
