@@ -40,8 +40,11 @@
     const post = (url, body) => fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
     }).then(r => r.json());
-    const uploadToken = (access, preset) => () =>
-      post('/api/cdn-upload-token?access=' + access + '&preset=' + (preset || '')).then(j => j.token);
+    // The section (preset) and the entity id go to our own backend, which
+    // checks the user's rights and signs folder/sizes/path into the token.
+    const uploadToken = (access, preset, id) => () =>
+      post('/api/cdn-upload-token?access=' + access + '&preset=' + (preset || '') + '&id=' + (id || ''))
+        .then(j => j.token);
 
     // The app's language switch: <html lang> is the SDK's default, setLang follows changes live.
     const langSelect = document.getElementById('lang');
@@ -50,10 +53,10 @@
       UnitUploader.setLang(langSelect.value);
     };
 
-    function open(access, extra, preset) {
+    function open(access, extra, preset, id) {
       return UnitUploader.open(Object.assign({
         uploaderUrl: '{{UPLOADER_URL}}/uploader/',
-        getToken: uploadToken(access, preset),
+        getToken: uploadToken(access, preset, id),
         languages: ['en', 'uk', 'ru'],
         onLanguageChange: lang => { langSelect.value = lang; document.documentElement.lang = lang; },
       }, extra)).then(async files => {
@@ -124,7 +127,7 @@
     document.getElementById('passport').onclick = () =>
       open('private', { types: ['image', 'document'], title: { en: 'Passport', uk: 'Паспорт', ru: 'Паспорт' } });
     document.getElementById('rooms').onclick = () =>
-      open('public', { types: ['image'], title: { en: 'Room photos', uk: 'Фото номерів', ru: 'Фото номеров' } }, 'rooms');
+      open('public', { types: ['image'], title: { en: 'Room photos', uk: 'Фото номерів', ru: 'Фото номеров' } }, 'rooms', 10991);
     document.getElementById('videos').onclick = () => open('public', { types: ['video'] });
   </script>
 </body>

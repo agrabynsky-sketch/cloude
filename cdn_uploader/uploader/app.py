@@ -232,18 +232,21 @@ def create_app(settings=None):
         # Jobs survive a token refresh: they belong to the client + user, not the token.
         return (claims.client_id, claims.subject, claims.origin)
 
-    def layout_of(claims):
-        """Folder + sizes, which take part in the file name ("" = the plain layout)."""
-        if not (claims.folder or claims.sizes):
+    def layout_of(claims, category):
+        """Folder + sizes, which take part in an image's name ("" = no size folders).
+        Only images get size folders (orig, small, ...): documents, archives and
+        videos go straight into the folder."""
+        if category != "image" or not (claims.folder or claims.sizes):
             return ""
         return claims.folder + "|" + ";".join(f"{n}-{w}-{h}-{m}" for n, w, h, m in claims.sizes)
 
-    def store(claims, digest, ext, items):
-        """Write (size name, bytes or temp file path, dimensions) items; returns stored entries."""
+    def store(claims, digest, ext, items, sized):
+        """Write (size name, bytes or temp file path, dimensions) items; returns stored entries.
+        With `sized` each item goes into its size folder (<folder>/<size>/...)."""
         stored = []
         for size_name, payload, dims in items:
             key = storage.key_for(digest, ext, claims.access, claims.client_id, claims.folder,
-                                  size_name if layout_of(claims) else "", claims.path, claims.site)
+                                  size_name if sized else "", claims.path, claims.site)
             if isinstance(payload, bytes):
                 storage.put(key, payload)
             else:
@@ -333,9 +336,9 @@ def create_app(settings=None):
             # Sizes are made from the sanitized image, never from the upload itself.
             dims, variants = make_variants(result.data, result.ext, claims.sizes, settings.limits)
             items = [("orig", result.data, dims)] + [(n, d, (w, h)) for n, d, w, h in variants]
-        digest = storage.digest(result.data, claims.access, claims.client_id, layout_of(claims),
-                                claims.site)
-        return result, digest, store(claims, digest, result.ext, items)
+        layout = layout_of(claims, result.category)
+        digest = storage.digest(result.data, claims.access, claims.client_id, layout, claims.site)
+        return result, digest, store(claims, digest, result.ext, items, sized=bool(layout))
 
     def run_video(job, src, size, name, ext, claims, ip):
         """Background part of a video upload."""
@@ -356,9 +359,9 @@ def create_app(settings=None):
                 if signature:
                     raise ValidationError("malware_detected", f"File is infected ({signature})")
             stored_size = os.path.getsize(out)
-            digest = storage.digest_file(out, claims.access, claims.client_id, layout_of(claims),
-                                         claims.site)
-            stored = store(claims, digest, out_ext, [("orig", out, None)])
+            layout = layout_of(claims, "video")
+            digest = storage.digest_file(out, claims.access, claims.client_id, layout, claims.site)
+            stored = store(claims, digest, out_ext, [("orig", out, None)], sized=bool(layout))
         except BaseException as exc:
             usage.release(claims.token_id)
             code = getattr(exc, "code", type(exc).__name__)

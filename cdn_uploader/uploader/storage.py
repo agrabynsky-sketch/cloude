@@ -9,10 +9,12 @@ Every stored file has a key, which is what an application keeps in its database:
 Protected files uploaded on a white-label site of a shared client go to
 <s|p>/<client>.<site>/... and open only on that site.
 
-With a folder and/or image sizes the layout is <folder>/<size>/<path>/<hash>.<ext>,
-"orig" being the original, e.g. f/rooms/orig/ab/cd/<hash>.jpg and
-f/rooms/small/ab/cd/<hash>.jpg; <path> is the hash shard unless the token
-gives one (e.g. "10/10991"). All sizes of one upload share the same name.
+With a folder and/or image sizes an image is stored as
+<folder>/<size>/<path>/<hash>.<ext>, "orig" being the original, e.g.
+f/rooms/orig/ab/cd/<hash>.jpg and f/rooms/small/ab/cd/<hash>.jpg; documents,
+archives and videos have no sizes and go to <folder>/<path>/<hash>.<ext>.
+<path> is the hash shard unless the token gives one (e.g. "10/10991").
+All sizes of one upload share the same name.
 
 hash = HMAC-SHA256(UPLOADER_HASH_KEY, [access + client[.site] +] [layout +] sanitized
 bytes). The key makes names unguessable even for someone who has a copy of

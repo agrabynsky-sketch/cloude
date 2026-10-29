@@ -210,7 +210,7 @@ function b64url(string $raw): string {
 function create_upload_token(string $clientId, string $secret, string $origin,
                              string $sub = '', int $ttl = 900, int $maxFiles = 20,
                              string $access = 'public', string $folder = '',
-                             array $sizes = [], string $path = ''): string {
+                             array $sizes = [], string $path = '', array $types = []): string {
     $payload = [
         'cid' => $clientId,
         'origin' => $origin,
@@ -223,6 +223,7 @@ function create_upload_token(string $clientId, string $secret, string $origin,
     if ($folder !== '') $payload['folder'] = $folder;     // e.g. photos/rooms
     if ($sizes) $payload['sizes'] = array_values($sizes); // e.g. ['small-70-0', 'big-1200-800']
     if ($path !== '') $payload['path'] = $path;           // e.g. 10/10991
+    if ($types) $payload['types'] = array_values($types); // e.g. ['image']
     $body = b64url(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     return $body . '.' . b64url(hash_hmac('sha256', $body, $secret, true));
 }
@@ -414,6 +415,81 @@ function verify_receipt(string $key, string $sub, string $receipt, string $secre
 заказать размер 50000 px. Удобно держать на бэкенде пресеты («номера»,
 «отели», «аватары») и выбирать нужный при выдаче токена — так сделано в демо.
 
+### Как раздел и сущность передают папку и размеры
+
+Так же, как сейчас (`folder=rooms&size[]=…`), только параметры идут не прямо в
+CDN, а через ваш бэкенд, который подписывает их в токен:
+
+```
+страница «Номер 10991», кнопка «Фото»
+  └─ UnitUploader.open({ getToken: () => fetch('/api/cdn-upload-token?section=rooms&id=10991') })
+бэкенд приложения
+  ├─ проверяет, что пользователь может редактировать номер 10991
+  ├─ берёт пресет rooms: папка photos/rooms + размеры
+  ├─ строит path из id: 10991 → 10/10991
+  └─ подписывает токен { folder, sizes, path, types, … }
+окно ─▶ отправляет токен с каждым файлом ─▶ CDN читает из него folder/sizes/path,
+         делает размеры и раскладывает по папкам
+```
+
+Фронтенд — одна функция на все разделы; раздел и id сущности уходят вашему
+бэкенду:
+
+```js
+function openUploader(section, id, options = {}) {
+  return UnitUploader.open({
+    uploaderUrl: 'https://cdn.unit.travel/uploader/',
+    getToken: () => fetch(`/api/cdn-upload-token?section=${section}&id=${id}`, { method: 'POST' })
+                      .then(r => r.json()).then(j => j.token),
+    ...options,
+  });
+}
+
+roomPhotosButton.onclick = () => openUploader('rooms', 10991);
+hotelPhotosButton.onclick = () => openUploader('hotels', 512);
+visaButton.onclick = () => openUploader('visa', orderId, { title: { ru: 'Документы для визы' } });
+```
+
+Бэкенд (PHP, `create_upload_token` — из раздела «Интеграция»): пресеты те же,
+что у вас сейчас, только в виде строк `имя-ширина-высота`:
+
+```php
+const CDN_PRESETS = [
+    'rooms'  => ['folder' => 'photos/rooms', 'types' => ['image'],
+                 'sizes'  => ['preview_panel-100-100', 'small-70-0', 'medium-350-0', 'big-1200-800']],
+    'hotels' => ['folder' => 'photos/hotels', 'types' => ['image'],
+                 'sizes'  => ['small-70-0', 'medium-350-0', 'big-1200-800']],
+    'visa'   => ['folder' => 'docs/visa', 'types' => ['image', 'document'], 'access' => 'private'],
+];
+
+// POST /api/cdn-upload-token?section=rooms&id=10991
+$section = $_GET['section'] ?? '';
+$id = (int)($_GET['id'] ?? 0);
+$preset = CDN_PRESETS[$section] ?? null;
+if (!$preset || $id <= 0 || !user_can_edit($user, $section, $id)) {   // ваша проверка прав
+    http_response_code(403);
+    exit;
+}
+echo json_encode(['token' => create_upload_token(
+    clientId: 'booking', secret: CDN_SECRET, origin: 'https://app.unit.travel',
+    sub: (string)$user->id, maxFiles: 50,
+    access: $preset['access'] ?? 'public',
+    folder: $preset['folder'], sizes: $preset['sizes'] ?? [], types: $preset['types'],
+    path: intdiv($id, 1000) . '/' . $id,                               // 10991 -> 10/10991
+)]);
+```
+
+Один вызов `UnitUploader.open()` — один раздел и одна сущность. Если на
+странице несколько разделов (фото номера и документы брони), у каждой кнопки
+свой `openUploader(...)`. Поменять пресет «на лету» внутри уже открытого окна
+нельзя.
+
+Почему не прямо из браузера: тогда любой пользователь мог бы загрузить файлы
+в папку чужого отеля (`path=10/10991`) или заказать сотню размеров по
+4096 px. Бэкенд же перед подписью проверяет права на сущность.
+
+### Формат размеров
+
 ```
 sizes = ["preview_panel-100-100", "small-70-0", "medium-350-0", "big-1200-800", "thumb-100-100-crop"]
 ```
@@ -432,7 +508,9 @@ sizes = ["preview_panel-100-100", "small-70-0", "medium-350-0", "big-1200-800", 
   прочие метаданные удалены, поворот по EXIF применён), в исходном разрешении;
 * формат размеров тот же, что у оригинала (jpg/png/gif/webp), прозрачность
   сохраняется, анимированные GIF/WebP остаются анимированными;
-* документы и видео в такой папке сохраняются только в `orig`.
+* документы, архивы и видео размеров не имеют и кладутся прямо в папку, без
+  `orig`: `f/<folder>/<path>/<hash>.pdf`. Размеры из токена на них не
+  влияют, и одинаковый файл в одной папке получает тот же ключ.
 
 Раскладка и ссылки — у всех размеров одно имя файла, отличается только папка
 размера:
@@ -444,6 +522,9 @@ https://cdn.unit.travel/f/photos/rooms/preview_panel/10/10991/<hash>.jpg
 https://cdn.unit.travel/f/photos/rooms/small/10/10991/<hash>.jpg
 https://cdn.unit.travel/f/photos/rooms/medium/10/10991/<hash>.jpg
 https://cdn.unit.travel/f/photos/rooms/big/10/10991/<hash>.jpg
+
+документ или видео с тем же токеном:
+https://cdn.unit.travel/f/photos/rooms/10/10991/<hash>.pdf
 ```
 
 Без `path` вместо `10/10991` используется шардинг по хешу (`ab/cd`). Чтобы

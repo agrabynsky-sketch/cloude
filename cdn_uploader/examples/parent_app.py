@@ -46,9 +46,15 @@ async def upload_token(request):
     # In a real app: check the user's session/CSRF here and decide what this
     # user may upload and how private it must be (passports -> "private").
     access = request.query_params.get("access", "public")
-    preset = PRESETS.get(request.query_params.get("preset", ""), {})
+    preset = dict(PRESETS.get(request.query_params.get("preset", ""), {}))
     if access not in ("public", "signed", "private"):
         return JSONResponse({"error": "bad access"}, status_code=400)
+    entity = request.query_params.get("id", "")
+    if preset and entity:
+        # Also check here that the user may edit this entity (room 10991).
+        if not entity.isdigit() or len(entity) > 12:
+            return JSONResponse({"error": "bad id"}, status_code=400)
+        preset["path"] = f"{int(entity) // 1000}/{int(entity)}"   # 10991 -> 10/10991
     token = create_token(CLIENT_ID, CLIENT_SECRET, ORIGIN, ttl=TOKEN_TTL, subject=USER_ID,
                          max_files=200, access=access, **preset)
     return JSONResponse({"token": token}, headers={"Cache-Control": "no-store"})

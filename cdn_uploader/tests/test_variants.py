@@ -97,6 +97,12 @@ def photo(size=(1600, 1200), **save):
     return out.getvalue()
 
 
+def fetch_bytes(client, url):
+    res = client.get(urlsplit(url).path)
+    assert res.status_code == 200, (url, res.status_code)
+    return res.content
+
+
 def fetch(client, url):
     parts = urlsplit(url)
     res = client.get(parts.path + ("?" + parts.query if parts.query else ""))
@@ -140,9 +146,23 @@ def test_folder_without_sizes_keeps_orig_level(client):
     assert body["key"].startswith("f/rooms/orig/") and "variants" not in body
 
 
-def test_documents_get_only_orig(client):
+def test_documents_and_archives_go_straight_into_folder(client):
     body = upload(client, samples.pdf(), name="ticket.pdf", folder="rooms", sizes=ROOM_SIZES)
-    assert body["key"].startswith("f/rooms/orig/") and "variants" not in body and "width" not in body
+    h = body["hash"]
+    assert body["key"] == f"f/rooms/{h[:2]}/{h[2:4]}/{h}.pdf"
+    assert body["folder"] == "rooms" and "variants" not in body and "width" not in body
+    assert fetch_bytes(client, body["url"]) == samples.pdf()
+    # Sizes mean nothing for a document: same file, same folder -> same key.
+    assert upload(client, samples.pdf(), name="ticket.pdf", folder="rooms")["key"] == body["key"]
+    archive = upload(client, samples.zip_of([("a.txt", b"hello")]), name="docs.zip",
+                     folder="photos/rooms", path="10/10991", sizes=ROOM_SIZES)
+    assert archive["key"] == f"f/photos/rooms/10/10991/{archive['hash']}.zip"
+
+
+def test_private_document_in_folder(client):
+    body = upload(client, samples.pdf(), name="passport.pdf", folder="passports", path="10/10991",
+                  sizes=ROOM_SIZES, access="private")
+    assert body["key"] == f"p/demo/passports/10/10991/{body['hash']}.pdf"
 
 
 def test_no_folder_no_sizes_keeps_old_layout(client):
@@ -206,7 +226,7 @@ def test_invalid_sizes_in_token_are_refused(client):
 
 
 @pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="ffmpeg not installed")
-def test_video_goes_to_folder_orig(tmp_path):
+def test_video_goes_straight_into_folder(tmp_path):
     import time
     env = {
         "UPLOADER_HASH_KEY": "k" * 40,
@@ -227,4 +247,6 @@ def test_video_goes_to_folder_orig(tmp_path):
             break
         time.sleep(0.1)
     assert body["status"] == "done", body
-    assert body["file"]["key"].startswith("f/rooms/orig/") and "variants" not in body["file"]
+    file = body["file"]
+    assert file["key"] == f"f/rooms/{file['hash'][:2]}/{file['hash'][2:4]}/{file['hash']}.mp4"
+    assert "variants" not in file
