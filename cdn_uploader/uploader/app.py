@@ -207,12 +207,18 @@ def create_app(settings=None):
     def authenticate(request, scope="upload"):
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            raise TokenError("invalid_token", "Missing bearer token")
-        return verify_token(
-            token.strip(), settings.clients, scope=scope,
-            max_ttl=settings.token_max_ttl, max_files_cap=settings.max_files_per_token,
-        )
+        try:
+            if scheme.lower() != "bearer" or not token:
+                raise TokenError("invalid_token", "Missing bearer token")
+            return verify_token(
+                token.strip(), settings.clients, scope=scope,
+                max_ttl=settings.token_max_ttl, max_files_cap=settings.max_files_per_token,
+            )
+        except TokenError as exc:
+            # The browser only gets a short code; the reason is here, for whoever sets things up.
+            log.info("token rejected ip=%s path=%s code=%s reason=%s", client_ip(request),
+                     request.url.path, exc.code, exc.detail or exc.message)
+            raise
 
     def token_error(exc):
         return error(exc.code, exc.message, 403 if exc.code == "origin_not_allowed" else 401)
@@ -476,6 +482,10 @@ def create_app(settings=None):
         # of white-label partners and grow with each of them.
         parent = request.query_params.get("origin", "")
         ancestors = parent.lower() if settings.clients.allows_any(parent) else "'none'"
+        if ancestors == "'none'" and path.name == "index.html":
+            log.warning("uploader page asked for by %.200r, which no client lists in origins: "
+                        "the browser will refuse to show it (frame-ancestors 'none')",
+                        parent or "a page without ?origin= (SDK older than 1.3.0?)")
         headers = {"Content-Security-Policy": ui_csp.format(ancestors), "Cache-Control": "no-cache"}
         return FileResponse(path, media_type=mime, headers=headers)
 

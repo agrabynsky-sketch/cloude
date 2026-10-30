@@ -66,6 +66,33 @@ def test_origin_must_be_registered_for_client():
     assert code_of(create_token("app", SECRET, "https://evil.example")) == "origin_not_allowed"
 
 
+def test_app_clock_may_run_a_little_ahead():
+    token = create_token("app", SECRET, "https://app.unit.travel", ttl=3600)
+    assert verify(token, now=int(time.time()) - 30).origin == "https://app.unit.travel"
+    assert code_of(token, now=int(time.time()) - 120) == "invalid_token"
+
+
+def detail_of(token):
+    with pytest.raises(TokenError) as info:
+        verify(token)
+    return info.value.message, info.value.detail
+
+
+@pytest.mark.parametrize("token, message, detail", [
+    (create_token("nope", SECRET, "https://app.unit.travel"), "Invalid token signature", "unknown client 'nope'"),
+    (create_token("app", "x" * 40, "https://app.unit.travel"), "Invalid token signature",
+     "signature does not match the secret of client 'app'"),
+    (create_token("app", SECRET, "https://app.unit.travel", ttl=10800), "Token lifetime is too long",
+     "at most 3600s allowed"),
+    (create_token("app", SECRET, "http://agent.utravel.local"), "Token origin is not allowed for this client",
+     "origin 'http://agent.utravel.local' is not registered for client 'app'"),
+])
+def test_rejections_explain_why_for_the_log(token, message, detail):
+    # The browser gets the message (same for unknown client and wrong secret); the log gets the detail.
+    got_message, got_detail = detail_of(token)
+    assert got_message == message and detail in got_detail
+
+
 @pytest.mark.parametrize("token", ["", "abc", "a.b.c", "!!!.???", "x" * 5000])
 def test_garbage_rejected(token):
     assert code_of(token) == "invalid_token"

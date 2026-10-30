@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import time
 from urllib.parse import quote
@@ -246,3 +247,33 @@ def test_rate_limit_tells_client_when_to_retry(tmp_path):
     res = put(client, "c.txt", b"3", headers)
     assert res.status_code == 429 and res.json()["error"] == "rate_limited"
     assert int(res.headers["retry-after"]) > 0
+
+
+@pytest.fixture
+def uploader_log(caplog):
+    # The "uploader" logger has its own handler and does not propagate.
+    logger = logging.getLogger("uploader")
+    logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="uploader")
+    yield caplog
+    logger.removeHandler(caplog.handler)
+
+
+def test_rejected_token_reason_is_logged_not_sent(client, uploader_log):
+    headers = {"Authorization": "Bearer " + create_token("demo", SECRET, ORIGIN, ttl=10800)}
+    res = client.get("/api/v1/session", headers=headers)
+    assert res.status_code == 401 and res.json() == {"error": "invalid_token",
+                                                     "message": "Token lifetime is too long"}
+    assert "token rejected" in uploader_log.text and "at most 3600s allowed" in uploader_log.text
+    other = {"Authorization": "Bearer " + create_token("demo", "y" * 40, ORIGIN)}
+    assert client.get("/api/v1/session", headers=other).json()["message"] == "Invalid token signature"
+    assert "does not match the secret of client 'demo'" in uploader_log.text
+
+
+def test_unregistered_framing_origin_is_logged(client, uploader_log):
+    client.get("/uploader/", params={"origin": "http://agent.utravel.local"})
+    assert "'http://agent.utravel.local'" in uploader_log.text and "frame-ancestors 'none'" in uploader_log.text
+    uploader_log.clear()
+    client.get("/uploader/uploader.js")            # assets load without ?origin=: no noise
+    client.get("/uploader/", params={"origin": ORIGIN})
+    assert "frame-ancestors" not in uploader_log.text

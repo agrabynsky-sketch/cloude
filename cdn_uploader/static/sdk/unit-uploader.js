@@ -41,6 +41,7 @@
   var ACCESS = { 'public': 1, signed: 1, 'private': 1 };
   var KEY_RE = /^(f|[sp]\/[a-z0-9][a-z0-9_-]{0,31}(\.[a-z0-9][a-z0-9_-]{0,31})?)\/([a-z0-9][a-z0-9_-]{0,63}\/){1,10}[0-9a-f]{64}\.[a-z0-9.]{2,6}$/;
   var SIZE_RE = /^[a-z0-9][a-z0-9_]{0,31}$/;
+  var READY_TIMEOUT = 15000;
   var current = null;
 
   function isLocalHost(hostname) {
@@ -164,6 +165,14 @@
       var previousFocus = document.activeElement;
       var previousOverflow = document.documentElement.style.overflow;
       var initSent = false;
+      // A page the CDN does not know gets a refused, empty frame and "ready"
+      // never comes: say why instead of leaving a silent blank dialog.
+      var readyTimer = setTimeout(function () {
+        var message = 'UnitUploader: the uploader did not start. Is ' + window.location.origin +
+          ' in the client\'s origins on the CDN? (the CDN log names the refused origin)';
+        if (window.console) console.error(message);
+        call(options.onError, { code: 'uploader_not_loaded', message: message });
+      }, READY_TIMEOUT);
 
       function post(msg) {
         msg.source = HOST;
@@ -171,6 +180,7 @@
       }
 
       function cleanup() {
+        clearTimeout(readyTimer);
         window.removeEventListener('message', onMessage);
         document.removeEventListener('keydown', onKey, true);
         overlay.remove();
@@ -196,6 +206,7 @@
 
         if (msg.type === 'ready' && !initSent) {
           initSent = true;
+          clearTimeout(readyTimer);
           Promise.resolve().then(getToken).then(function (token) {
             if (typeof token !== 'string' || !token) throw new Error('UnitUploader: empty token');
             post({
@@ -301,7 +312,7 @@
   var api = {
     open: open, close: close, setLang: setLang,
     fetchFile: fetchFile, fileUrl: fileUrl, download: download,
-    version: '1.3.1'
+    version: '1.3.2'
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;

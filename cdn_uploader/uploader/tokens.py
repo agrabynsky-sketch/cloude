@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from urllib.parse import quote, urlencode
 
 MAX_TOKEN_LENGTH = 8192
+CLOCK_SKEW = 60            # seconds the app's clock may run ahead of the CDN's
 MAX_READ_FILES = 100
 B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?$")
@@ -72,10 +73,11 @@ RECEIPT_KEY_LABEL = b"unit-uploader:receipt:v1"
 
 
 class TokenError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, detail=""):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = detail      # for the CDN log only, never sent to the browser
 
 
 @dataclass(frozen=True)
@@ -292,22 +294,29 @@ def verify_token(token, clients, *, max_ttl, max_files_cap, scope="upload", max_
     if not isinstance(payload, dict):
         raise TokenError("invalid_token", "Malformed token")
 
-    client = clients.get(payload.get("cid")) if isinstance(payload.get("cid"), str) else None
+    cid = payload.get("cid")
+    client = clients.get(cid) if isinstance(cid, str) else None
     # Same error for "unknown client" and "bad signature": nothing to probe.
-    if client is None or not hmac.compare_digest(_sign(client.secret, body), _b64decode(signature)):
-        raise TokenError("invalid_token", "Invalid token signature")
+    if client is None:
+        raise TokenError("invalid_token", "Invalid token signature", f"unknown client {cid!r:.80}")
+    if not hmac.compare_digest(_sign(client.secret, body), _b64decode(signature)):
+        raise TokenError("invalid_token", "Invalid token signature",
+                         f"signature does not match the secret of client {cid!r}")
 
     exp, origin, jti = payload.get("exp"), payload.get("origin"), payload.get("jti")
     if not isinstance(exp, int) or isinstance(exp, bool):
         raise TokenError("invalid_token", "Token has no expiry")
     if exp <= now:
-        raise TokenError("token_expired", "Token has expired")
-    if exp - now > max_ttl:
-        raise TokenError("invalid_token", "Token lifetime is too long")
+        raise TokenError("token_expired", "Token has expired", f"expired {now - exp}s ago")
+    if exp - now > max_ttl + CLOCK_SKEW:
+        raise TokenError("invalid_token", "Token lifetime is too long",
+                         f"exp is {exp - now}s ahead, at most {max_ttl}s allowed: "
+                         "TTL too long, or the clocks differ")
     allows = getattr(client, "allows", None)
     if (not isinstance(origin, str) or not ORIGIN_RE.match(origin)
             or not (allows(origin) if allows else origin in client.origins)):
-        raise TokenError("origin_not_allowed", "Token origin is not allowed for this client")
+        raise TokenError("origin_not_allowed", "Token origin is not allowed for this client",
+                         f"origin {origin!r:.200} is not registered for client {cid!r}")
     if not isinstance(jti, str) or not 8 <= len(jti) <= 128:
         raise TokenError("invalid_token", "Token has no id")
 

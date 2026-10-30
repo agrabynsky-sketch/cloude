@@ -207,7 +207,9 @@
   function fetchSession(token, origin) {
     return api('session', token).then(function (r) {
       if (r.status !== 200) throw r.body;
-      if (r.body.origin !== origin) throw { error: 'origin_mismatch' };
+      if (r.body.origin !== origin) {
+        throw { error: 'origin_mismatch', message: 'the token is for ' + r.body.origin + ', this page is ' + origin };
+      }
       return r.body;
     });
   }
@@ -244,6 +246,9 @@
       setup(session, options);
     }).catch(function (err) {
       var code = (err && err.error) || 'network';
+      // The user sees a short text; whoever integrates the uploader gets the reason.
+      if (window.console) console.error('UnitUploader: session rejected: ' + code +
+        (err && err.message ? ' (' + err.message + ')' : ''));
       fatal('sessionFailed', code);
       send('error', { code: code, message: errorText(code) });
     });

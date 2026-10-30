@@ -851,6 +851,47 @@ curl -X POST https://cdn.unit.travel/api/v1/files \
 * Смена секрета клиента делает недействительными все его временные ссылки,
   токены и квитанции (сами файлы и ключи остаются).
 
+## Частые проблемы
+
+Причину любого отказа CDN пишет в свой лог (`journalctl -u unit-uploader`),
+а окно — в консоль браузера. Сам токен в лог не попадает.
+
+**Окно пустое, в консоли `Framing 'https://cdn.unit.travel/' violates … "frame-ancestors 'none'"`**
+Домена страницы нет в `origins` ни одного клиента. Через 15 с SDK пишет в
+консоль `UnitUploader: the uploader did not start…` и вызывает `onError` с
+кодом `uploader_not_loaded`, а в логе CDN появляется
+`uploader page asked for by 'http://…', which no client lists in origins`.
+Добавьте домен **точно как в адресной строке**: схема, домен и порт должны
+совпадать. `http://agent.utravel.local` и `https://agent.utravel.local` —
+разные origin'ы, а маска `https://*.utravel.local` под `http://` не подходит.
+Если клиенты лежат в файле, проверьте, нет ли в логе `keeping previous
+clients`: при ошибке в JSON новые домены не применяются. SDK должен быть
+версии 1.3.0 или новее (`UnitUploader.version`): старые копии не передают
+домен страницы.
+
+**«Сессия загрузки недействительна» (`invalid_token`)** — причина в консоли и
+в логе CDN (`token rejected … reason=…`):
+
+* `exp is 10800s ahead, at most 3600s allowed` — токен выдан на срок больше
+  `UPLOADER_TOKEN_MAX_TTL` (по умолчанию 3600 с), или часы бэкенда сильно
+  убежали вперёд. `exp` — это `time()` (UTC) плюс срок в секундах, без
+  поправки на часовой пояс. Расхождение часов до 60 с допускается. Длинные
+  сроки не нужны: SDK сам попросит новый токен через `getToken`;
+* `unknown client 'unit'` — такого `cid` нет в конфигурации CDN;
+* `signature does not match the secret of client 'unit'` — секрет на
+  бэкенде отличается от секрета в `UPLOADER_CLIENTS` (частая причина —
+  пробел или перевод строки в конце). Подпись — HMAC-SHA256 от первой части
+  токена в base64url без `=`.
+
+**«Загрузка с этого сайта не разрешена»**:
+
+* `origin_not_allowed` — `origin` из токена не зарегистрирован у клиента;
+* `origin_mismatch` — токен выдан для другого домена, чем страница, где
+  открыто окно (в консоли: `the token is for https://b2b.unit.travel, this
+  page is http://agent.utravel.local`). Если один бэкенд обслуживает
+  несколько доменов, `origin` в токене должен быть доменом той страницы,
+  которая открывает окно.
+
 ## Структура
 
 ```
