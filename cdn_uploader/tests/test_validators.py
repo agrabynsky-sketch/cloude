@@ -190,6 +190,87 @@ def test_pdf_objstm_bomb_hits_budget():
     assert rejected("a.pdf", data) == "too_large_uncompressed"
 
 
+# ---- signed PDFs (КЕП) -----------------------------------------------------------
+
+@pytest.mark.parametrize("make", [samples.signed, samples.signed_ber])
+def test_signed_pdf_kept_byte_for_byte(make):
+    data = make()
+    assert ok("довідка.pdf", data).data == data
+
+
+def test_several_signers_and_signature_over_signature():
+    assert ok("a.pdf", samples.signed(signers=3)).data
+    over = samples.signed(samples.signed(samples.signed(signers=2)))
+    assert ok("a.pdf", over).data == over
+    assert rejected("a.pdf", samples.signed(over)) == "content_mismatch"       # 4 levels
+
+
+def test_detached_signature_rejected():
+    assert rejected("a.pdf", samples.signed(detached=True)) == "content_mismatch"
+
+
+def test_p7s_extension_is_not_accepted():
+    assert rejected("a.pdf.p7s", samples.signed()) == "type_not_allowed"
+
+
+@pytest.mark.parametrize("data", [
+    samples.signed() + b"\0",                                  # anything after the container
+    b"\0" + samples.signed(),                                  # or before it
+    samples.signed()[:-10],                                    # truncated
+    samples.signed(oid=samples.der(0x06, bytes.fromhex("2a864886f70d010703"))),  # envelopedData
+    samples.signed(content_type=samples.der(0x06, bytes.fromhex("2a864886f70d010705"))),
+    samples.signed(signers=0),
+    samples.signed(signers=21),
+    samples.signed(certificates=[samples.certificate()] * 51),
+    samples.signed(certificates=[samples.der(0x30, *[b"\x30\x80"] * 70)]),   # malformed DER
+    # an indefinite element whose end-of-contents lies past its parent
+    samples.signed(certificates=[samples.der(0x30, b"\x30\x80\x02\x01\x01"), b"\0\0"]),
+])
+def test_malformed_signature_container_rejected(data):
+    assert rejected("a.pdf", data) == "content_mismatch"
+
+
+def test_deep_der_nesting_rejected():
+    deep = samples.der(0x30)
+    for _ in range(80):
+        deep = samples.der(0x30, deep)
+    assert rejected("a.pdf", samples.signed(certificates=[deep])) == "content_mismatch"
+
+
+@pytest.mark.parametrize("document, code", [
+    (samples.docx(), "content_mismatch"),                      # only PDFs may be signed
+    (b"<html><script>alert(1)</script></html>", "content_mismatch"),
+    (samples.pdf(b"/OpenAction << /S /JavaScript /JS (x) >>"), "active_content"),
+    (samples.pdf() + b"<script>", "invalid_pdf"),
+])
+def test_signed_document_gets_all_pdf_checks(document, code):
+    assert rejected("a.pdf", samples.signed(document)) == code
+
+
+@pytest.mark.parametrize("payload", [
+    b"PK\x05\x06" + bytes(18), b"PK\x03\x04", b"%PDF-1.4", b"<script>", b"<HTML>", b"<?php",
+    b"\x7fELF", b"javascript:alert(1)",
+])
+def test_file_hidden_in_certificate_rejected(payload):
+    # The container cannot be rebuilt, so its bytes are searched for other files.
+    cert = samples.certificate("x" + payload.decode("latin-1"))
+    assert rejected("a.pdf", samples.signed(certificates=[cert])) == "active_content"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("openssl"), reason="openssl not installed")
+@pytest.mark.parametrize("stream", [False, True])
+def test_openssl_signed_pdf_accepted(tmp_path, stream):
+    import subprocess
+    (tmp_path / "doc.pdf").write_bytes(samples.pdf())
+    run = lambda *a: subprocess.run(["openssl", *a], cwd=tmp_path, check=True, capture_output=True)
+    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "k.pem", "-out", "c.pem",
+        "-subj", "/CN=Test", "-days", "1")
+    run("cms", "-sign", "-binary", "-nodetach", *(["-stream"] if stream else []), "-in", "doc.pdf",
+        "-signer", "c.pem", "-inkey", "k.pem", "-outform", "DER", "-out", "signed.pdf")
+    data = (tmp_path / "signed.pdf").read_bytes()
+    assert ok("signed.pdf", data).data == data
+
+
 # ---- office -----------------------------------------------------------------
 
 def test_docx_accepted_and_rebuilt():

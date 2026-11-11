@@ -277,3 +277,10 @@ def test_unregistered_framing_origin_is_logged(client, uploader_log):
     client.get("/uploader/uploader.js")            # assets load without ?origin=: no noise
     client.get("/uploader/", params={"origin": ORIGIN})
     assert "frame-ancestors" not in uploader_log.text
+
+
+def test_signed_pdf_stored_as_uploaded(client):
+    data = samples.signed()
+    body = put(client, "довідка.pdf", data, auth()).json()
+    assert body["ext"] == "pdf" and body["mime"] == "application/pdf"
+    assert client.get("/f/" + body["url"].split("/f/", 1)[1]).content == data
