@@ -641,9 +641,6 @@
     if (typeof body.width === 'number') { file.width = body.width; file.height = Number(body.height) || 0; }
     if (typeof body.folder === 'string') file.folder = body.folder;
     if (body.variants && typeof body.variants === 'object') file.variants = body.variants;
-    if (body.signature && typeof body.signature === 'object') {
-      file.signature = { format: String(body.signature.format || 'cms'), signers: Number(body.signature.signers) || 1 };
-    }
     return file;
   }
 
@@ -780,7 +777,6 @@
     } else if (item.status === 'done') {
       var sizes = item.result && item.result.variants ? Object.keys(item.result.variants).length : 0;
       text = sizes > 1 ? fmt(t.uploadedSizes, { n: sizes }) : t.uploaded;
-      if (item.result && item.result.signature) text += ' · ' + t.signedQes;
     }
     else if (item.status === 'error') text = errorText(item.code);
     item.statusEl.textContent = text;

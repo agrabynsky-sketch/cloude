@@ -278,8 +278,7 @@ def create_app(settings=None):
             ref["url"] = f"{protected_base}/{key}"  # opens only with a read token
         return ref
 
-    def describe_file(stored, digest, claims, name, ext, mime, category, size, original_size,
-                      signature=None):
+    def describe_file(stored, digest, claims, name, ext, mime, category, size, original_size):
         """What the uploader hands to the application for one upload."""
         _, key, dims = stored[0]
         body = {
@@ -289,9 +288,6 @@ def create_app(settings=None):
         }
         if claims.folder:
             body["folder"] = claims.folder
-        if signature:
-            # The file carries an e-signature (КЕП), kept byte for byte; it is not verified here.
-            body["signature"] = signature
         if dims:
             body["width"], body["height"] = dims
         if category == "image" and claims.sizes:
@@ -331,16 +327,16 @@ def create_app(settings=None):
         if scanner is not None:
             try:
                 # The upload (intent) and what will actually be stored.
-                virus = scanner.scan(data)
-                if not virus and result.data != data:
-                    virus = scanner.scan(result.data)
+                signature = scanner.scan(data)
+                if not signature and result.data != data:
+                    signature = scanner.scan(result.data)
             except AntivirusError:
                 if settings.clamd_required:
                     raise
                 log.warning("antivirus unavailable, accepting %s without scan", name)
-                virus = None
-            if virus:
-                raise ValidationError("malware_detected", f"File is infected ({virus})")
+                signature = None
+            if signature:
+                raise ValidationError("malware_detected", f"File is infected ({signature})")
         items = [("orig", result.data, None)]
         if result.category == "image":
             # Sizes are made from the sanitized image, never from the upload itself.
@@ -360,14 +356,14 @@ def create_app(settings=None):
             # so scanning it adds nothing; a remuxed one keeps the original data.
             if scanner is not None and settings.video.mode == "remux":
                 try:
-                    virus = scanner.scan_file(out)
+                    signature = scanner.scan_file(out)
                 except AntivirusError as exc:
                     if settings.clamd_required:
                         log.error("antivirus failure: %s", exc)
                         raise ValidationError("antivirus_unavailable", "File could not be scanned") from None
-                    virus = None
-                if virus:
-                    raise ValidationError("malware_detected", f"File is infected ({virus})")
+                    signature = None
+                if signature:
+                    raise ValidationError("malware_detected", f"File is infected ({signature})")
             stored_size = os.path.getsize(out)
             layout = layout_of(claims, "video")
             digest = storage.digest_file(out, claims.access, claims.client_id, layout, claims.site)
@@ -438,7 +434,7 @@ def create_app(settings=None):
                  len(data), len(result.data))
         return JSONResponse(
             describe_file(stored, digest, claims, name, result.ext, result.mime, result.category,
-                          len(result.data), len(data), result.signature),
+                          len(result.data), len(data)),
             status_code=201, headers=API_HEADERS)
 
     async def upload_video(request, claims, ip, name, ftype):

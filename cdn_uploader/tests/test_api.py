@@ -277,26 +277,3 @@ def test_unregistered_framing_origin_is_logged(client, uploader_log):
     client.get("/uploader/uploader.js")            # assets load without ?origin=: no noise
     client.get("/uploader/", params={"origin": ORIGIN})
     assert "frame-ancestors" not in uploader_log.text
-
-
-def test_signed_pdf_stored_as_uploaded_with_signature_flag(client):
-    data = samples.signed()
-    for name, ext, mime in (("довідка.pdf", "pdf", "application/pdf"),
-                            ("довідка.pdf.p7s", "p7s", "application/pkcs7-signature")):
-        body = put(client, name, data, auth()).json()
-        assert body["signature"] == {"format": "cms", "signers": 1}
-        assert body["ext"] == ext and body["mime"] == mime and body["url"].endswith("." + ext)
-        served = client.get("/f/" + body["url"].split("/f/", 1)[1])
-        assert served.content == data and served.headers["content-type"] == mime
-        assert served.headers["content-disposition"].startswith("attachment")
-    assert "signature" not in put(client, "a.pdf", samples.pdf(), auth()).json()
-
-
-def test_signed_upload_errors(client):
-    res = put(client, "sig.p7s", samples.signed(detached=True), auth())
-    assert res.status_code == 422 and res.json()["error"] == "detached_signature"
-    assert put(client, "a.p7s", samples.pdf(), auth()).json()["error"] == "content_mismatch"
-
-
-def test_session_offers_p7s_as_document(client):
-    assert client.get("/api/v1/session", headers=auth()).json()["extensions"]["p7s"] == "document"

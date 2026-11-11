@@ -40,63 +40,6 @@ def pdf(catalog_extra=b"", extra_objects=b""):
     )
 
 
-def der(tag, *parts):
-    """One DER element: tag byte, definite length, the parts concatenated."""
-    content = b"".join(parts)
-    n = len(content)
-    if n < 0x80:
-        length = bytes([n])
-    else:
-        raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
-        length = bytes([0x80 | len(raw)]) + raw
-    return bytes([tag]) + length + content
-
-
-def ber(tag, *parts):
-    """A constructed element with indefinite length, as streaming signers write it."""
-    return bytes([tag, 0x80]) + b"".join(parts) + b"\0\0"
-
-
-OID_SIGNED_DATA = der(0x06, bytes.fromhex("2a864886f70d010702"))
-OID_DATA = der(0x06, bytes.fromhex("2a864886f70d010701"))
-OID_DSTU_HASH = der(0x06, bytes.fromhex("2a86240201010101020201"))                 # 1.2.804.2.1.1.1.1.2.2.1
-OID_DSTU_SIGN = der(0x06, bytes.fromhex("2a8624020101010103060101"))               # 1.2.804.2.1.1.1.1.3.6.1.1
-
-
-def certificate(subject="Тестовий підписувач"):
-    """Shaped like an X.509 certificate; nothing here checks its contents."""
-    name = der(0x30, der(0x31, der(0x30, der(0x06, b"\x55\x04\x03"), der(0x0C, subject.encode()))))
-    tbs = der(0x30, der(0xA0, der(0x02, b"\x02")), der(0x02, bytes(range(1, 21))),
-              der(0x30, OID_DSTU_SIGN), name, name, der(0x30, OID_DSTU_SIGN, der(0x03, b"\x00" + bytes(33))))
-    return der(0x30, tbs, der(0x30, OID_DSTU_SIGN), der(0x03, b"\x00" + bytes(range(64))))
-
-
-def signer_info():
-    return der(0x30, der(0x02, b"\x01"), der(0x30, OID_DSTU_HASH), der(0x30, OID_DSTU_SIGN),
-               der(0x04, bytes(range(64, 128))))
-
-
-def signed(document=None, *, signers=1, certificates=None, detached=False, content_type=OID_DATA,
-           oid=OID_SIGNED_DATA):
-    """A file with an internal e-signature (CMS SignedData, DER), like a КЕП from a bank or Дія."""
-    document = pdf() if document is None else document
-    certificates = [certificate()] if certificates is None else certificates
-    encap = der(0x30, content_type) if detached else der(0x30, content_type, der(0xA0, der(0x04, document)))
-    signed_data = der(0x30, der(0x02, b"\x01"), der(0x31, der(0x30, OID_DSTU_HASH)), encap,
-                      der(0xA0, *certificates), der(0x31, *[signer_info() for _ in range(signers)]))
-    return der(0x30, oid, der(0xA0, signed_data))
-
-
-def signed_ber(document=None, chunk=1000):
-    """The same as streaming signers write it: indefinite lengths, the document in chunks."""
-    document = pdf() if document is None else document
-    chunks = [der(0x04, document[i:i + chunk]) for i in range(0, len(document), chunk)]
-    encap = ber(0x30, OID_DATA, ber(0xA0, ber(0x24, *chunks)))
-    signed_data = ber(0x30, der(0x02, b"\x01"), der(0x31, der(0x30, OID_DSTU_HASH)), encap,
-                      der(0xA0, certificate()), der(0x31, signer_info()))
-    return ber(0x30, OID_SIGNED_DATA, ber(0xA0, signed_data))
-
-
 def pdf_objstm(inner, filters=b"/FlateDecode", encode=zlib.compress):
     body = encode(b"5 0 " + inner)
     obj = (b"6 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter " + filters
