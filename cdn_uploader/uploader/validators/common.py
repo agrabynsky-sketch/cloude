@@ -10,6 +10,7 @@ never reaches the CDN.
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Optional
 
 MB = 1024 * 1024
 
@@ -66,6 +67,8 @@ class Context:
     archive_depth: int = 0
     # "outer.zip/inner/file.pdf" for messages about nested entries.
     path: str = ""
+    # Set by a validator that kept an e-signature: {"format": "cms", "signers": n}.
+    signature: Optional[dict] = None
 
     def child(self, name, archive=False):
         return Context(
@@ -88,6 +91,7 @@ class Sanitized:
     mime: str
     category: str
     notes: list = field(default_factory=list)
+    signature: Optional[dict] = None     # the file carries an e-signature (not verified)
 
 
 # Magic numbers of things that must never be stored, whatever they claim to be.

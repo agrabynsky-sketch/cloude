@@ -18,7 +18,8 @@
  *     onFileUploaded: (file) => {},     // optional, fires per stored file
  *   });
  *   // files: [{ key, access, url, expires_at?, receipt, name, size, mime, ext, category, hash,
- *   //           folder?, width?, height?, variants?: { orig: {key, url, receipt, width, height}, small: {...} } }]
+ *   //           folder?, width?, height?, variants?: { orig: {key, url, receipt, width, height}, small: {...} },
+ *   //           signature?: { format: 'cms', signers } }]   // signature: the file carries a КЕП
  *   //        or null if cancelled
  *
  *   UnitUploader.setLang('ru');          // follow the app's language switch while open
@@ -102,6 +103,10 @@
     if (ref.expires_at) out.expires_at = ref.expires_at;
     if (ref.width) { out.width = ref.width; out.height = ref.height; }
     if (typeof f.folder === 'string') out.folder = f.folder;
+    // The file carries an e-signature (КЕП), kept as uploaded; the CDN does not verify it.
+    if (f.signature && typeof f.signature === 'object') {
+      out.signature = { format: 'cms', signers: Math.max(1, Math.min(Number(f.signature.signers) || 1, 99)) };
+    }
     if (f.variants && typeof f.variants === 'object') {
       out.variants = {};
       Object.keys(f.variants).forEach(function (name) {
@@ -312,7 +317,7 @@
   var api = {
     open: open, close: close, setLang: setLang,
     fetchFile: fetchFile, fileUrl: fileUrl, download: download,
-    version: '1.3.2'
+    version: '1.4.0'
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.UnitUploader = api;

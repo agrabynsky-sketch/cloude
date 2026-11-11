@@ -16,7 +16,7 @@ from .archives import validate_tar, validate_tar_gz, validate_zip
 from .common import Budget, Context, Limits, Sanitized, ValidationError, looks_executable
 from .images import sanitize_image
 from .office import validate_odf, validate_ooxml
-from .pdf import validate_pdf
+from .pdf import validate_p7s, validate_pdf
 from .text import validate_csv, validate_text
 from .video import VideoSettings, process_video
 
@@ -58,6 +58,8 @@ FILE_TYPES = {
         FileType("gif", "image/gif", "image", _image("gif")),
         FileType("webp", "image/webp", "image", _image("webp")),
         FileType("pdf", "application/pdf", "document", validate_pdf),
+        # A PDF with an internal e-signature, kept byte for byte (see cms.py).
+        FileType("p7s", "application/pkcs7-signature", "document", validate_p7s),
         FileType("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                  "document", _ooxml("docx")),
         FileType("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -111,4 +113,5 @@ def sanitize(filename, data, ctx, categories=BYTES_CATEGORIES):
     if looks_executable(data):
         ctx.fail("active_content", "Executable files are not allowed")
     out = ftype.handler(data, ctx)
-    return Sanitized(data=out, ext=ftype.ext, mime=ftype.mime, category=ftype.category)
+    return Sanitized(data=out, ext=ftype.ext, mime=ftype.mime, category=ftype.category,
+                     signature=ctx.signature)

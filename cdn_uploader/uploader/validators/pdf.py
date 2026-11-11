@@ -13,12 +13,19 @@ inspected instead, in layers that do not trust each other:
    and the file is rejected.
 
 Encrypted files are rejected because their objects cannot be inspected.
+
+A PDF with an "internal" e-signature (КЕП) comes wrapped in a CMS container,
+as .p7s or still as .pdf. The PDF inside gets exactly the same checks, the
+container is checked by cms.py, and the file is kept as is: rebuilding it
+would break the signature.
 """
 
 import base64
 import binascii
 import re
 import zlib
+
+from . import cms
 
 # Long enough that matching them anywhere, even inside binary stream data,
 # cannot realistically produce false positives.
@@ -168,6 +175,25 @@ def _decode_stream(body, filters, ctx):
 
 
 def validate_pdf(data, ctx):
+    """A PDF, or a PDF inside an e-signature container. Returns `data` unchanged."""
+    if cms.looks_signed(data):
+        document, signers = cms.unwrap(data, ctx)
+        if not document.startswith(b"%PDF-"):
+            ctx.fail("content_mismatch", "The signed document is not a PDF")
+        _check_pdf(document, ctx)
+        ctx.signature = {"format": "cms", "signers": signers}
+        return data
+    return _check_pdf(data, ctx)
+
+
+def validate_p7s(data, ctx):
+    """A signed PDF (.p7s): the container is required."""
+    if not cms.looks_signed(data):
+        ctx.fail("content_mismatch", "Content is not a signed document")
+    return validate_pdf(data, ctx)
+
+
+def _check_pdf(data, ctx):
     if not re.match(rb"%PDF-[12]\.\d", data[:8]):
         ctx.fail("content_mismatch", "Content is not a PDF document")
     # Only whitespace may follow the final %%EOF: nothing can ride along after it.
