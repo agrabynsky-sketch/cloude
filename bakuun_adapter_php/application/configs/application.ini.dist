@@ -1,0 +1,86 @@
+; Copy to application.ini and fill in the secrets. Booleans: use 1 / 0.
+
+[production]
+phpSettings.display_startup_errors = 0
+phpSettings.display_errors = 0
+phpSettings.date.timezone = "UTC"
+; an ARI push waits up to ari.statusWaitSeconds per Unit.Travel message
+phpSettings.max_execution_time = 120
+includePaths.library = APPLICATION_PATH "/../library"
+bootstrap.path = APPLICATION_PATH "/Bootstrap.php"
+bootstrap.class = "Bootstrap"
+appnamespace = ""
+autoloaderNamespaces[] = "Bakuun_"
+autoloaderNamespaces[] = "UnitTravel_"
+
+resources.frontController.controllerDirectory = APPLICATION_PATH "/controllers"
+resources.frontController.params.displayExceptions = 0
+
+; Mappings, restriction layers and the booking queue (schema: data/schema.mysql.sql)
+resources.db.adapter = "pdo_mysql"
+resources.db.params.host = "localhost"
+resources.db.params.dbname = "bakuun_adapter"
+resources.db.params.username = "bakuun_adapter"
+resources.db.params.password = ""
+resources.db.params.charset = "utf8mb4"
+
+; Credentials Bakuun sends in every push to us (we issue them to Bakuun).
+bakuun.inbound.username = "bakuun"
+bakuun.inbound.password = ""
+
+; Our Buyer API account at Bakuun (B-Aggregate and B-MarketPlace have separate ones).
+bakuun.username = ""
+bakuun.password = ""
+bakuun.partnerId = "MPBXX"
+bakuun.partnerName = "Unit.Travel"
+bakuun.timeout = 30
+bakuun.caFile = ""
+; The URLs Bakuun assigns to the account (partner id and key in the path).
+bakuun.url.getProperty = "https://wsb.bakuun.com/v2/getproperty/MPBXX/XXXX"
+bakuun.url.pushProperty = "https://wsb.bakuun.com/v2/push-property/MPBXX/XXXX"
+bakuun.url.getListing = "https://wsb.bakuun.com/v2/getlisting/MPBXX/XXXX"
+bakuun.url.readProperties = "https://wsb.bakuun.com/ratedockAPI/MPBXX/readproperties"
+bakuun.url.booking = "https://wsb.bakuun.com/v2/booking/MPBXX/XXXX"
+bakuun.url.readBooking = "https://wsb.bakuun.com/v1/read-booking/MPBXX/XXXX"
+
+; Unit.Travel Partner API: sandbox https://api.test.unit.travel/partner/v1,
+; production https://api.unit.travel/partner/v1
+unitTravel.baseUrl = "https://api.test.unit.travel/partner/v1"
+unitTravel.apiKey = ""
+unitTravel.timeout = 30
+unitTravel.caFile = ""
+; Secret for X-UnitTravel-Signature; empty disables /webhooks/unit-travel.
+unitTravel.webhookSecret = ""
+; scripts/bakuun.php sync pulls /reservations of every active property.
+unitTravel.pullReservations = 1
+; Send Bakuun's answer in the acknowledge body (needs Partner API support).
+unitTravel.ackWithDetails = 0
+
+; Which Bakuun amount becomes the Unit.Travel price (Unit.Travel ARI prices are net of taxes).
+ari.priceField = "amountBeforeTax"
+; Refuse rateType BAR (gross) prices instead of storing them as they come.
+ari.rejectBarRates = 0
+ari.statusWaitSeconds = 10
+ari.statusPollInterval = 0.5
+ari.maxItemsPerMessage = 1000
+
+; Bookings sent to Bakuun
+bookings.checkInTime = "14:00"
+bookings.checkOutTime = "12:00"
+; Force a payment method (B-MarketPlace bookings must be BANK); empty: derived from the reservation.
+bookings.paymentMethod = ""
+; Unit.Travel sends no tax breakdown; this is what Bakuun is told instead.
+bookings.taxType = "VAT"
+bookings.taxIncluded = 0
+bookings.taxPrice = "0.00"
+bookings.taxDescription = "Taxes are not included in the price"
+; Give up (and log the reservation as rejected) after this many failed deliveries.
+bookings.maxAttempts = 20
+
+log.path = APPLICATION_PATH "/../data/logs/adapter.log"
+
+[development : production]
+phpSettings.display_startup_errors = 1
+phpSettings.display_errors = 1
+resources.db.adapter = "pdo_sqlite"
+resources.db.params.dbname = APPLICATION_PATH "/../data/bakuun_adapter.sqlite"

@@ -10,3 +10,8 @@ exely_adapter_php/data/*.sqlite
 exely_adapter_php/data/logs/*.log
 exely_adapter_php/vendor/
 exely_adapter_php/composer.lock
+bakuun_adapter_php/application/configs/application.ini
+bakuun_adapter_php/data/*.sqlite
+bakuun_adapter_php/data/logs/*.log
+bakuun_adapter_php/vendor/
+bakuun_adapter_php/composer.lock
