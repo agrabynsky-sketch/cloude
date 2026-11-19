@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Unit.Travel Hotel Partner Inventory API
-  version: "1.8.0"
+  version: "1.9.1"
   description: >
     API интеграции инвенторной системы Unit.Travel с PMS и Channel Manager.
 
@@ -494,8 +494,7 @@ components:
             Категории номеров, к которым применяется тариф. Каждый элемент несёт
             `id` номера, его `base_occupancy` и `pricing_model` для этого номера
             в рамках данного тарифа (`per_room` — не зависит от числа гостей,
-            либо `per_guest` — цена зависит от числа гостей; ARI-обновление цен
-            должно соответствовать этой модели).
+            либо `per_guest` — цена зависит от числа гостей).
           items:
             type: object
             properties:

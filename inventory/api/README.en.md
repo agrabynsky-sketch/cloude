@@ -1,6 +1,6 @@
 # Unit.Travel Hotel Partner Inventory API — Integration Guide
 
-Version: **1.8.0** · Formal spec: [`openapi.en.yaml`](./openapi.en.yaml)
+Version: **1.9.1** · Formal spec: [`openapi.en.yaml`](./openapi.en.yaml)
 (loads into Swagger UI / Redoc). Audience: **PMS and Channel Manager
 systems**.
 

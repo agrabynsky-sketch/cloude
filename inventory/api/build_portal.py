@@ -48,7 +48,7 @@ HTML = f"""<!doctype html>
 </head>
 <body>
 <header>
-  <div class="brand">Unit.Travel <small>Hotel Partner Inventory API · v1.8.0</small></div>
+  <div class="brand">Unit.Travel <small>Hotel Partner Inventory API · v1.9.1</small></div>
   <div class="spacer"></div>
   <div class="langs">
 {buttons}

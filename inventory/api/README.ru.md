@@ -1,6 +1,6 @@
 # Unit.Travel Hotel Partner Inventory API — Integration Guide
 
-Версия: **1.8.0** · Формальная спецификация: [`openapi.ru.yaml`](./openapi.ru.yaml)
+Версия: **1.9.1** · Формальная спецификация: [`openapi.ru.yaml`](./openapi.ru.yaml)
 (загружается в Swagger UI / Redoc). Аудитория: **PMS и Channel Manager**.
 
 Модель интеграции — **ARI** (Availability, Rates, Inventory):

@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: Unit.Travel Hotel Partner Inventory API
-  version: "1.8.0"
+  version: "1.9.1"
   description: >
     Integration API of the Unit.Travel inventory system for PMS and Channel
     Manager systems.
@@ -496,8 +496,7 @@ components:
             Room categories this rate plan applies to. Each entry carries the
             room `id`, its `base_occupancy`, and the `pricing_model` used for
             this room under this rate plan (`per_room` — occupancy-independent,
-            or `per_guest` — price depends on the number of guests; ARI rate
-            updates must match it).
+            or `per_guest` — price depends on the number of guests).
           items:
             type: object
             properties:
