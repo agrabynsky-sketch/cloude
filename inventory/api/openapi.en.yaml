@@ -479,14 +479,6 @@ components:
           type: integer
           description: Standard number of guests the base price covers
           example: 2
-        pricing_model:
-          type: string
-          enum: [per_room, per_guest]
-          description: >
-            How this room is priced — `per_room` (occupancy-independent) or
-            `per_guest` (price depends on the number of guests). ARI rate
-            updates must match this model.
-          example: per_room
         max_adults: { type: integer, example: 3 }
         max_children: { type: integer, example: 2 }
         max_infants: { type: integer, example: 1 }
@@ -498,7 +490,23 @@ components:
         id: { type: integer, format: int64, example: 13500 }
         code: { type: string, example: "STD-BB-FLEX" }
         name: { type: string, example: "Standard BB Flexible" }
-        room_id: { type: integer, format: int64, example: 4500 }
+        rooms:
+          type: array
+          description: >
+            Room categories this rate plan applies to. Each entry carries the
+            room `id`, its `base_occupancy`, and the `pricing_model` used for
+            this room under this rate plan (`per_room` — occupancy-independent,
+            or `per_guest` — price depends on the number of guests; ARI rate
+            updates must match it).
+          items:
+            type: object
+            properties:
+              id: { type: integer, format: int64, example: 4500 }
+              base_occupancy: { type: integer, example: 2 }
+              pricing_model:
+                type: string
+                enum: [per_room, per_guest]
+                example: per_room
         board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
         currency: { type: string, example: "EUR" }
         is_refundable: { type: boolean, example: true }

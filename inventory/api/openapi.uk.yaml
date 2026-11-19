@@ -476,14 +476,6 @@ components:
           type: integer
           description: Стандартна кількість гостей, яку покриває базова ціна
           example: 2
-        pricing_model:
-          type: string
-          enum: [per_room, per_guest]
-          description: >
-            Як тарифікується номер — `per_room` (не залежить від кількості
-            гостей) або `per_guest` (ціна залежить від кількості гостей).
-            ARI-оновлення цін має відповідати цій моделі.
-          example: per_room
         max_adults: { type: integer, example: 3 }
         max_children: { type: integer, example: 2 }
         max_infants: { type: integer, example: 1 }
@@ -495,7 +487,23 @@ components:
         id: { type: integer, format: int64, example: 13500 }
         code: { type: string, example: "STD-BB-FLEX" }
         name: { type: string, example: "Standard BB Flexible" }
-        room_id: { type: integer, format: int64, example: 4500 }
+        rooms:
+          type: array
+          description: >
+            Категорії номерів, до яких застосовується тариф. Кожен елемент несе
+            `id` номера, його `base_occupancy` та `pricing_model` для цього
+            номера в межах цього тарифу (`per_room` — не залежить від кількості
+            гостей, або `per_guest` — ціна залежить від кількості гостей;
+            ARI-оновлення цін має відповідати цій моделі).
+          items:
+            type: object
+            properties:
+              id: { type: integer, format: int64, example: 4500 }
+              base_occupancy: { type: integer, example: 2 }
+              pricing_model:
+                type: string
+                enum: [per_room, per_guest]
+                example: per_room
         board: { type: string, enum: [RO, BB, HB, FB, AI], example: BB }
         currency: { type: string, example: "EUR" }
         is_refundable: { type: boolean, example: true }
